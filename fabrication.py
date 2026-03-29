@@ -67,6 +67,76 @@ class Fabrication:
             filler.Fill(zones)
             Refresh()
 
+    def _find_kicad_cli(self):
+        """Locate the kicad-cli executable, returning its path or None."""
+        import shutil
+        candidates = [
+            "kicad-cli",
+            "/Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli",
+            "/usr/local/bin/kicad-cli",
+            "/usr/bin/kicad-cli",
+        ]
+        for c in candidates:
+            found = shutil.which(c) or (os.path.isfile(c) and c)
+            if found:
+                return found
+        return None
+
+    def run_drc(self):
+        """Run DRC via kicad-cli after zone fill and return a list of error descriptions.
+
+        Saves the current in-memory board state (including the fresh zone fill)
+        to a temporary file alongside the original so that relative design-rule
+        references resolve correctly, then invokes kicad-cli pcb drc and parses
+        the JSON output.  Returns an empty list if DRC passes or if kicad-cli
+        cannot be found.
+        """
+        import json
+        import subprocess
+        import tempfile
+
+        kicad_cli = self._find_kicad_cli()
+        if not kicad_cli:
+            self.logger.warning("kicad-cli not found — DRC skipped")
+            return []
+
+        board_dir = os.path.dirname(self.board.GetFileName())
+        tmp_fd, tmp_board = tempfile.mkstemp(suffix=".kicad_pcb", dir=board_dir)
+        os.close(tmp_fd)
+        tmp_report = tmp_board.replace(".kicad_pcb", "_drc.json")
+
+        try:
+            self.board.Save(tmp_board)
+            subprocess.run(
+                [kicad_cli, "pcb", "drc",
+                 "--format", "json",
+                 "--severity-error",
+                 "--output", tmp_report,
+                 tmp_board],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            if not os.path.exists(tmp_report):
+                self.logger.warning("kicad-cli produced no DRC output")
+                return []
+            with open(tmp_report, encoding="utf-8") as f:
+                data = json.load(f)
+            errors = [
+                v.get("description", "Unknown DRC error")
+                for v in data.get("violations", [])
+                if v.get("severity") == "error"
+            ]
+            self.logger.info("DRC completed: %d error(s) found", len(errors))
+            return errors
+        except Exception as exc:
+            self.logger.warning("DRC check could not be completed: %s", exc)
+            return []
+        finally:
+            for f in (tmp_board, tmp_report):
+                if os.path.exists(f):
+                    os.remove(f)
+
     def fix_rotation(self, footprint):
         """Fix the rotation of footprints in order to be correct for JLCPCB."""
         original = footprint.GetOrientation()

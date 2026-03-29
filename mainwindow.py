@@ -999,6 +999,21 @@ class JLCPCBTools(wx.Dialog):
                 if result == wx.CANCEL:
                     return
         self.fabrication.fill_zones()
+
+        drc_errors = self.fabrication.run_drc()
+        if drc_errors:
+            preview = "\n".join(drc_errors[:10])
+            if len(drc_errors) > 10:
+                preview += f"\n\n... and {len(drc_errors) - 10} more error(s)"
+            result = wx.MessageBox(
+                f"DRC found {len(drc_errors)} error(s):\n\n{preview}\n\n"
+                "Fix the errors and try again, or click OK to export anyway.",
+                "DRC Errors",
+                wx.OK | wx.CANCEL | wx.ICON_ERROR | wx.CENTER,
+            )
+            if result == wx.CANCEL:
+                return
+
         layer_selection = self.layer_selection.GetSelection()
         number = re.search(r"\d+", self.layer_selection.GetString(layer_selection))
         if number:
