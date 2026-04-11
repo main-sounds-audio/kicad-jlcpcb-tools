@@ -174,6 +174,55 @@ class Fabrication:
         """Return the cached version string for this export run."""
         return getattr(self, "_fab_version_str", "0")
 
+    def update_pcb_version_text(self):
+        """Find PCB text items containing the previous version string and update them.
+
+        Requires a previous version to exist (i.e. from the second export onwards).
+        On the first export, place the version text manually on the board — every
+        subsequent export will keep it in sync automatically.  Saves the board if
+        any text items were changed.
+        """
+        if not self.parent.settings.get("gerber", {}).get("update_pcb_text", True):
+            return
+        if not hasattr(self, "_prev_fab_version_str") or not self._prev_fab_version_str:
+            self.logger.info(
+                "No previous version — PCB text update skipped "
+                "(add version text to the board manually for the first export)"
+            )
+            return
+
+        old_ver = self._prev_fab_version_str
+        new_ver = self._fab_version_str
+        updated = []
+
+        for item in self.board.GetDrawings():
+            try:
+                cls = item.GetClass()
+            except Exception:
+                continue
+            if cls not in ("PCB_TEXT", "PTEXT", "PCB_TEXTBOX"):
+                continue
+            try:
+                text = item.GetText()
+            except Exception:
+                continue
+            if old_ver in text:
+                new_text = text.replace(old_ver, new_ver)
+                item.SetText(new_text)
+                updated.append((text, new_text))
+                self.logger.info("Updated PCB text: %r → %r", text, new_text)
+
+        if updated:
+            try:
+                self.board.Save(self.board.GetFileName())
+                self.logger.info(
+                    "Saved board — updated %d version text item(s)", len(updated)
+                )
+            except Exception as exc:
+                self.logger.warning(
+                    "Could not save board after updating version text: %s", exc
+                )
+
     def fill_zones(self):
         """Refill copper zones following user prompt."""
         if self.parent.settings.get("gerber", {}).get("fill_zones", True):

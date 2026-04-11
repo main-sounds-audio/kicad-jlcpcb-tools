@@ -931,6 +931,7 @@ class JLCPCBTools(wx.Frame):
         else:
             layer_count = None
         self.fabrication.prepare_fab_version()
+        self.fabrication.update_pcb_version_text()
         self.fabrication.generate_geber(layer_count)
         self.fabrication.generate_excellon()
         self.fabrication.zip_gerber_excellon()

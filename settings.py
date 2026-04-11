@@ -248,6 +248,17 @@ class SettingsDialog(wx.Dialog):
         _add_row(self.delete_old_versions_image, self.delete_old_versions_setting)
 
         # ---------------------------------------------------------------------
+        # Update version text on PCB  — mdi-text-box-edit-outline.png
+        # ---------------------------------------------------------------------
+        self.update_pcb_text_image = _icon("mdi-text-box-edit-outline.png")
+        self.update_pcb_text_setting = _checkbox(
+            "Update version text on PCB",
+            "gerber_update_pcb_text",
+            "Find the previous version string in PCB text items and replace it with the new version",
+        )
+        _add_row(self.update_pcb_text_image, self.update_pcb_text_setting)
+
+        # ---------------------------------------------------------------------
         # Font size
         # ---------------------------------------------------------------------
         self.font_size_image = _icon("mdi-magnify.png")
@@ -327,6 +338,9 @@ class SettingsDialog(wx.Dialog):
     def update_delete_old_versions(self, value):
         self.delete_old_versions_setting.SetValue(value)
 
+    def update_update_pcb_text(self, value):
+        self.update_pcb_text_setting.SetValue(value)
+
     def update_version_style(self, style_key):
         """Select the correct item in the version style dropdown."""
         keys = [c[1] for c in self._version_style_choices]
@@ -369,6 +383,7 @@ class SettingsDialog(wx.Dialog):
         self.update_auto_version(g.get("auto_version", True))
         self.update_version_style(g.get("version_style", "integer"))
         self.update_delete_old_versions(g.get("delete_old_versions", False))
+        self.update_update_pcb_text(g.get("update_pcb_text", True))
         self.update_font_size(gen.get("font_size", 11))
 
     def update_settings(self, event):
