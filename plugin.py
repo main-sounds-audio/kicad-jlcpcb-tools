@@ -39,3 +39,11 @@ class JLCPCBPlugin(ActionPlugin):
         _open_window = JLCPCBTools(None)
         _open_window.Center()
         _open_window.Show()
+        # Defer focus so the event loop has processed Show before we activate.
+        # Without this, macOS renders the window as "inactive" (grey icons)
+        # until the user clicks into it.
+        import wx as _wx
+        _wx.CallLater(150, lambda: (
+            _open_window.Raise(),
+            _open_window.SetFocus(),
+        ) if _open_window and _open_window.IsShown() else None)

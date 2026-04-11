@@ -49,6 +49,18 @@ def HighResWxSize(window, size):
     return size
 
 
+def is_dark_mode():
+    """Return True if macOS system dark mode is active."""
+    try:
+        if hasattr(wx.SystemSettings, "GetAppearance") and hasattr(
+            wx.SystemSettings.GetAppearance(), "IsUsingDarkBackground"
+        ):
+            return wx.SystemSettings.GetAppearance().IsUsingDarkBackground()
+    except Exception:
+        pass
+    return False
+
+
 def loadBitmapScaled(filename, scale=1.0, static=False):
     """Load a scaled bitmap, handle differences between Kicad versions."""
     if filename:
@@ -56,12 +68,31 @@ def loadBitmapScaled(filename, scale=1.0, static=False):
         bmp = wx.Bitmap(path)
         w, h = bmp.GetSize()
         img = bmp.ConvertToImage()
-        if hasattr(wx.SystemSettings, "GetAppearance") and hasattr(
-            wx.SystemSettings.GetAppearance, "IsUsingDarkBackground"
-        ):
-            if wx.SystemSettings.GetAppearance().IsUsingDarkBackground():
-                img.Replace(0, 0, 0, 255, 255, 255)
-            bmp = wx.Bitmap(img.Scale(int(w * scale), int(h * scale)))
+        if is_dark_mode():
+            # Icons are designed for light backgrounds: dark art on a white/light
+            # background.  In dark mode we need to:
+            #   1. Make near-white background pixels transparent so the dark
+            #      toolbar shows through instead of a white box.
+            #   2. Convert near-black art pixels to white so they're visible.
+            # Coloured pixels (green ticks, blue highlights) are left alone.
+            if not img.HasAlpha():
+                img.InitAlpha()
+            rgb = bytearray(img.GetData())
+            alpha = bytearray(img.GetAlphaBuffer() if hasattr(img, "GetAlphaBuffer") else img.GetAlpha() if hasattr(img, "GetAlpha") else bytes([255] * (len(rgb) // 3)))
+            for i in range(0, len(rgb), 3):
+                r, g, b = rgb[i], rgb[i + 1], rgb[i + 2]
+                # Near-white background → transparent
+                if r > 200 and g > 200 and b > 200:
+                    alpha[i // 3] = 0
+                # Near-black art → white (only achromatic pixels, leave colour alone)
+                elif r < 80 and g < 80 and b < 80:
+                    rgb[i] = rgb[i + 1] = rgb[i + 2] = 255
+            img.SetData(bytes(rgb))
+            try:
+                img.SetAlpha(bytes(alpha))
+            except Exception:
+                pass
+        bmp = wx.Bitmap(img.Scale(int(w * scale), int(h * scale)))
     else:
         bmp = wx.Bitmap()
     if getWxWidgetsVersion() > 315 and not static:

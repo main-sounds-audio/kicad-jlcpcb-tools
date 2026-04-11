@@ -133,234 +133,193 @@ class JLCPCBTools(wx.Frame):
         self.SetAcceleratorTable(accel)
 
         # ---------------------------------------------------------------------
-        # -------------------- Horizontal top buttons -------------------------
+        # -------------------- Horizontal top toolbar (custom panel) ----------
         # ---------------------------------------------------------------------
+        # Built as a wx.Panel so font size is fully under our control,
+        # matching the right-side panel.
 
-        self.upper_toolbar = wx.ToolBar(
-            self,
-            wx.ID_ANY,
-            wx.DefaultPosition,
-            wx.Size(1300, -1),
-            wx.TB_HORIZONTAL | wx.TB_TEXT | wx.TB_NODIVIDER,
-        )
+        from .helpers import is_dark_mode as _is_dark
+        _dark = _is_dark()
+        _tb_fg = wx.WHITE if _dark else wx.BLACK
+        _font_size = int(self.settings.get("general", {}).get("font_size", 11))
+        _toolbar_font = wx.SystemSettings.GetFont(wx.SYS_DEFAULT_GUI_FONT)
+        _toolbar_font.SetPointSize(_font_size)
 
-        self.generate_button = self.upper_toolbar.AddTool(
-            ID_GENERATE,
-            "Generate",
-            loadBitmapScaled("fabrication.png", self.scale_factor),
+        self.upper_toolbar = wx.Panel(self, style=wx.NO_BORDER)
+        _top_sizer = wx.BoxSizer(wx.HORIZONTAL)
+
+        def _make_top_btn(icon_file, label, tooltip, handler):
+            """A vertical icon+label button for the top bar."""
+            bmp = loadBitmapScaled(icon_file, self.scale_factor)
+            img = wx.StaticBitmap(self.upper_toolbar, wx.ID_ANY, bmp)
+            img.SetToolTip(wx.ToolTip(tooltip))
+            img.SetCursor(wx.Cursor(wx.CURSOR_HAND))
+            lbl = wx.StaticText(self.upper_toolbar, label=label)
+            lbl.SetForegroundColour(_tb_fg)
+            lbl.SetFont(_toolbar_font)
+            lbl.SetCursor(wx.Cursor(wx.CURSOR_HAND))
+            col = wx.BoxSizer(wx.VERTICAL)
+            col.Add(img, 0, wx.ALIGN_CENTER | wx.TOP, 4)
+            col.Add(lbl, 0, wx.ALIGN_CENTER | wx.BOTTOM, 4)
+            _top_sizer.Add(col, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT | wx.RIGHT, 8)
+            img.Bind(wx.EVT_LEFT_UP, handler)
+            lbl.Bind(wx.EVT_LEFT_UP, handler)
+            return img
+
+        def _top_sep():
+            line = wx.StaticLine(self.upper_toolbar, style=wx.LI_VERTICAL)
+            _top_sizer.Add(line, 0, wx.EXPAND | wx.TOP | wx.BOTTOM, 4)
+
+        self.generate_button = _make_top_btn(
+            "fabrication.png", "Generate",
             "Generate fabrication files for JLCPCB",
-        )
+            self.generate_fabrication_data)
 
-        self.upper_toolbar.AddSeparator()
+        _top_sep()
 
-        self.layer_selection = adv.BitmapComboBox(
-            self.upper_toolbar, ID_LAYERS, style=wx.CB_READONLY
-        )
-
-        layer_options = [
-            "Auto",
-            "1 Layer",
-            "2 Layer",
-            "4 Layer",
-            "6 Layer",
-            "8 Layer",
-            "10 Layer",
-            "12 Layer",
-            "14 Layer",
-            "16 Layer",
-            "18 Layer",
-            "20 Layer",
-        ]
-
-        for option in layer_options:
-            self.layer_selection.Append(
-                option,
-                loadBitmapScaled(
-                    "mdi-layers-triple-outline.png", self.scale_factor, True
-                ),
-            )
-
+        # Layer selector — keep as a real ComboBox (no bitmap needed)
+        _layer_lbl = wx.StaticText(self.upper_toolbar, label="Layers:")
+        _layer_lbl.SetFont(_toolbar_font)
+        _layer_lbl.SetForegroundColour(_tb_fg)
+        self.layer_selection = wx.Choice(self.upper_toolbar, ID_LAYERS)
+        self.layer_selection.SetFont(_toolbar_font)
+        for option in ["Auto","1 Layer","2 Layer","4 Layer","6 Layer","8 Layer",
+                        "10 Layer","12 Layer","14 Layer","16 Layer","18 Layer","20 Layer"]:
+            self.layer_selection.Append(option)
         self.layer_selection.SetSelection(0)
+        _layer_row = wx.BoxSizer(wx.HORIZONTAL)
+        _layer_row.Add(_layer_lbl, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 4)
+        _layer_row.Add(self.layer_selection, 0, wx.ALIGN_CENTER_VERTICAL)
+        _top_sizer.Add(_layer_row, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT | wx.RIGHT, 8)
 
-        self.upper_toolbar.AddControl(self.layer_selection)
+        _top_sizer.AddStretchSpacer(1)
 
-        self.upper_toolbar.AddStretchableSpace()
+        _top_sep()
 
-        self.correction_button = self.upper_toolbar.AddTool(
-            ID_CORRECTIONS,
-            "Corrections",
-            loadBitmapScaled("mdi-format-rotate-90.png", self.scale_factor),
-            "Manage part corrections",
-        )
+        self.correction_button = _make_top_btn(
+            "mdi-format-rotate-90.png", "Corrections",
+            "Manage part corrections", self.manage_corrections)
 
-        self.mapping_button = self.upper_toolbar.AddTool(
-            ID_MAPPINGS,
-            "Mappings",
-            loadBitmapScaled("mdi-selection.png", self.scale_factor),
-            "Manage part mappings",
-        )
+        self.mapping_button = _make_top_btn(
+            "mdi-selection.png", "Mappings",
+            "Manage part mappings", self.manage_mappings)
 
-        self.upper_toolbar.AddSeparator()
+        _top_sep()
 
-        self.download_button = self.upper_toolbar.AddTool(
-            ID_DOWNLOAD,
-            "Download",
-            loadBitmapScaled("mdi-cloud-download-outline.png", self.scale_factor),
-            "Download latest JLCPCB parts database",
-        )
+        self.download_button = _make_top_btn(
+            "mdi-cloud-download-outline.png", "Download",
+            "Download latest JLCPCB parts database", self.update_library)
 
-        self.settings_button = self.upper_toolbar.AddTool(
-            ID_SETTINGS,
-            "Settings",
-            loadBitmapScaled("mdi-cog-outline.png", self.scale_factor),
-            "Manage settings",
-        )
+        self.settings_button = _make_top_btn(
+            "mdi-cog-outline.png", "Settings",
+            "Manage settings", self.manage_settings)
 
-        self.upper_toolbar.Realize()
-
-        self.Bind(wx.EVT_TOOL, self.generate_fabrication_data, self.generate_button)
-        self.Bind(wx.EVT_TOOL, self.manage_corrections, self.correction_button)
-        self.Bind(wx.EVT_TOOL, self.manage_mappings, self.mapping_button)
-        self.Bind(wx.EVT_TOOL, self.update_library, self.download_button)
-        self.Bind(wx.EVT_TOOL, self.manage_settings, self.settings_button)
+        self.upper_toolbar.SetSizer(_top_sizer)
 
         # ---------------------------------------------------------------------
         # ------------------ Right side toolbar List --------------------------
         # ---------------------------------------------------------------------
+        # Right-side panel — uses wx.Panel + BitmapButton so that text colour
+        # is fully under our control (wx.ToolBar on macOS ignores SetForegroundColour).
+        # ---------------------------------------------------------------------
 
-        self.right_toolbar = wx.ToolBar(
+        from .helpers import is_dark_mode as _is_dark
+        _dark = _is_dark()
+        _btn_fg = wx.WHITE if _dark else wx.BLACK
+
+        _font_size = int(self.settings.get("general", {}).get("font_size", 11))
+        _toolbar_font = wx.SystemSettings.GetFont(wx.SYS_DEFAULT_GUI_FONT)
+        _toolbar_font.SetPointSize(_font_size)
+
+        self.right_toolbar_panel = wx.ScrolledWindow(
             self,
-            wx.ID_ANY,
-            wx.DefaultPosition,
-            wx.Size(int(self.scale_factor * 168), -1),
-            wx.TB_VERTICAL | wx.TB_TEXT | wx.TB_NODIVIDER,
+            style=wx.VSCROLL | wx.NO_BORDER,
         )
+        self.right_toolbar_panel.SetScrollRate(0, 10)
+        self.right_toolbar_panel.SetMinSize(wx.Size(int(self.scale_factor * 180), -1))
 
-        self.select_part_button = self.right_toolbar.AddTool(
-            ID_SELECT_PART,
-            "Assign LCSC number",
-            loadBitmapScaled(
-                "mdi-database-search-outline.png",
-                self.scale_factor,
-            ),
-            "Assign a LCSC number to a footprint",
-        )
+        _panel_sizer = wx.BoxSizer(wx.VERTICAL)
 
-        self.remove_lcsc_number_button = self.right_toolbar.AddTool(
-            ID_REMOVE_LCSC_NUMBER,
-            "Remove LCSC number",
-            loadBitmapScaled(
-                "mdi-close-box-outline.png",
-                self.scale_factor,
-            ),
-            "Remove a LCSC number from a footprint",
-        )
+        # Track toggle state manually for hide buttons (StaticBitmap has no toggle state)
+        self._hide_bom_state = False
+        self._hide_pos_state = False
 
-        self.select_alike_button = self.right_toolbar.AddTool(
-            ID_SELECT_ALIKE,
-            "Select alike parts",
-            loadBitmapScaled(
-                "mdi-checkbox-multiple-marked.png",
-                self.scale_factor,
-            ),
-            "Select footprint that are alike",
-        )
+        def _make_btn(icon_file, label, tooltip, handler, toggle=False):
+            """Create a labelled static-bitmap button.
 
-        self.toggle_bom_pos_button = self.right_toolbar.AddTool(
-            ID_TOGGLE_BOM_POS,
-            "Toggle BOM & POS",
-            loadBitmapScaled(
-                "bom-pos.png",
-                self.scale_factor,
-            ),
-            "Toggle exclud from BOM and POS attribute",
-        )
+            Using wx.StaticBitmap instead of wx.BitmapButton avoids macOS
+            dimming the image when the button/window doesn't have focus.
+            """
+            bmp = loadBitmapScaled(icon_file, self.scale_factor)
+            img = wx.StaticBitmap(self.right_toolbar_panel, wx.ID_ANY, bmp)
+            img.SetToolTip(wx.ToolTip(tooltip))
+            img.SetCursor(wx.Cursor(wx.CURSOR_HAND))
 
-        self.toggle_bom_button = self.right_toolbar.AddTool(
-            ID_TOGGLE_BOM,
-            "Toggle BOM",
-            loadBitmapScaled(
-                "mdi-format-list-bulleted.png",
-                self.scale_factor,
-            ),
-            "Toggle exclude from BOM attribute",
-        )
+            lbl = wx.StaticText(self.right_toolbar_panel, label=label)
+            lbl.SetForegroundColour(_btn_fg)
+            lbl.SetFont(_toolbar_font)
+            lbl.SetCursor(wx.Cursor(wx.CURSOR_HAND))
 
-        self.toggle_pos_button = self.right_toolbar.AddTool(
-            ID_TOGGLE_POS,
-            "Toggle POS",
-            loadBitmapScaled(
-                "mdi-crosshairs-gps.png",
-                self.scale_factor,
-            ),
-            "Toggle exclude from POS attribute",
-        )
+            row = wx.BoxSizer(wx.VERTICAL)
+            row.Add(img, 0, wx.ALIGN_CENTER | wx.TOP, 8)
+            row.Add(lbl, 0, wx.ALIGN_CENTER | wx.TOP | wx.BOTTOM, 3)
+            _panel_sizer.Add(row, 0, wx.EXPAND)
 
-        self.part_details_button = self.right_toolbar.AddTool(
-            ID_PART_DETAILS,
-            "Part details",
-            loadBitmapScaled(
-                "mdi-text-box-search-outline.png",
-                self.scale_factor,
-            ),
-            "Show details of an assigned LCSC part",
-        )
+            img.Bind(wx.EVT_LEFT_UP, handler)
+            lbl.Bind(wx.EVT_LEFT_UP, handler)
+            return img
 
-        self.hide_bom_button = self.right_toolbar.AddCheckTool(
-            ID_HIDE_BOM,
-            "Hide excluded BOM",
-            loadBitmapScaled(
-                "mdi-eye-off-outline.png",
-                self.scale_factor,
-            ),
-            wx.NullBitmap,
-            "Hide excluded BOM parts",
-        )
+        # Order: most-used actions first
+        self.select_part_button = _make_btn(
+            "mdi-database-search-outline.png", "Assign LCSC number",
+            "Assign a LCSC number to a footprint", self.select_part)
 
-        self.hide_pos_button = self.right_toolbar.AddCheckTool(
-            ID_HIDE_POS,
-            "Hide excluded POS",
-            loadBitmapScaled(
-                "mdi-eye-off-outline.png",
-                self.scale_factor,
-            ),
-            wx.NullBitmap,
-            "Hide excluded POS parts",
-        )
+        self.remove_lcsc_number_button = _make_btn(
+            "mdi-close-box-outline.png", "Remove LCSC number",
+            "Remove a LCSC number from a footprint", self.remove_lcsc_number)
 
-        self.save_all_button = self.right_toolbar.AddTool(
-            ID_SAVE_MAPPINGS,
-            "Save mappings",
-            loadBitmapScaled(
-                "mdi-content-save-settings.png",
-                self.scale_factor,
-            ),
-            "Save all mappings",
-        )
+        self.select_alike_button = _make_btn(
+            "mdi-checkbox-multiple-marked.png", "Select alike parts",
+            "Select footprints that are alike", self.select_alike)
 
-        self.export_schematic_button = self.right_toolbar.AddTool(
-            ID_EXPORT_TO_SCHEMATIC,
-            "Export to schematic",
-            loadBitmapScaled(
-                "mdi-application-export.png",
-                self.scale_factor,
-            ),
-            "Export mappings to schematic",
-        )
+        self.part_details_button = _make_btn(
+            "mdi-text-box-search-outline.png", "Part details",
+            "Show details of an assigned LCSC part", self.get_part_details)
 
-        self.Bind(wx.EVT_TOOL, self.select_part, self.select_part_button)
-        self.Bind(wx.EVT_TOOL, self.remove_lcsc_number, self.remove_lcsc_number_button)
-        self.Bind(wx.EVT_TOOL, self.select_alike, self.select_alike_button)
-        self.Bind(wx.EVT_TOOL, self.toggle_bom_pos, self.toggle_bom_pos_button)
-        self.Bind(wx.EVT_TOOL, self.toggle_bom, self.toggle_bom_button)
-        self.Bind(wx.EVT_TOOL, self.toggle_pos, self.toggle_pos_button)
-        self.Bind(wx.EVT_TOOL, self.get_part_details, self.part_details_button)
-        self.Bind(wx.EVT_TOOL, self.OnBomHide, self.hide_bom_button)
-        self.Bind(wx.EVT_TOOL, self.OnPosHide, self.hide_pos_button)
-        self.Bind(wx.EVT_TOOL, self.save_all_mappings, self.save_all_button)
-        self.Bind(wx.EVT_TOOL, self.export_to_schematic, self.export_schematic_button)
+        self.save_all_button = _make_btn(
+            "mdi-content-save-settings.png", "Save mappings",
+            "Save all mappings", self.save_all_mappings)
 
-        self.right_toolbar.Realize()
+        self.export_schematic_button = _make_btn(
+            "mdi-application-export.png", "Export to schematic",
+            "Export mappings to schematic", self.export_to_schematic)
+
+        # Less-used actions below
+        self.toggle_bom_pos_button = _make_btn(
+            "bom-pos.png", "Toggle BOM & POS",
+            "Toggle exclude from BOM and POS attribute", self.toggle_bom_pos)
+
+        self.toggle_bom_button = _make_btn(
+            "mdi-format-list-bulleted.png", "Toggle BOM",
+            "Toggle exclude from BOM attribute", self.toggle_bom)
+
+        self.toggle_pos_button = _make_btn(
+            "mdi-crosshairs-gps.png", "Toggle POS",
+            "Toggle exclude from POS attribute", self.toggle_pos)
+
+        self.hide_bom_button = _make_btn(
+            "mdi-eye-off-outline.png", "Hide excluded BOM",
+            "Hide excluded BOM parts", self.OnBomHide, toggle=True)
+
+        self.hide_pos_button = _make_btn(
+            "mdi-eye-off-outline.png", "Hide excluded POS",
+            "Hide excluded POS parts", self.OnPosHide, toggle=True)
+
+        self.right_toolbar_panel.SetSizer(_panel_sizer)
+
+        # Keep a reference as self.right_toolbar so the rest of the code that
+        # calls enable_part_specific_toolbar_buttons still works.
+        self.right_toolbar = self.right_toolbar_panel
 
         # ---------------------------------------------------------------------
         # ----------------------- Footprint List ------------------------------
@@ -453,7 +412,7 @@ class JLCPCBTools(wx.Frame):
 
         self.footprint_list.Bind(dv.EVT_DATAVIEW_ITEM_CONTEXT_MENU, self.OnRightDown)
 
-        table_sizer.Add(self.right_toolbar, 1, wx.EXPAND, 5)
+        table_sizer.Add(self.right_toolbar_panel, 1, wx.EXPAND, 5)
         # ---------------------------------------------------------------------
         # --------------------- Bottom Logbox and Gauge -----------------------
         # ---------------------------------------------------------------------
@@ -491,18 +450,9 @@ class JLCPCBTools(wx.Frame):
         self.SetSizer(layout)
         self.Layout()
 
-        # Centre within the usable client area (excludes macOS menu bar).
-        try:
-            display_idx = wx.Display.GetFromWindow(self)
-            if display_idx == wx.NOT_FOUND:
-                display_idx = 0
-            client_area = wx.Display(display_idx).GetClientArea()
-            win_size = self.GetSize()
-            x = client_area.x + max(0, (client_area.width - win_size.width) // 2)
-            y = client_area.y + max(0, (client_area.height - win_size.height) // 2)
-            self.SetPosition(wx.Point(x, y))
-        except Exception:
-            self.Centre(wx.BOTH)
+        # Start maximised — this sidesteps the macOS menu-bar positioning issue
+        # entirely and matches the "Zoom" behaviour the user was using manually.
+        self.Maximize()
 
         # ---------------------------------------------------------------------
         # ------------------------ Custom Events ------------------------------
@@ -701,67 +651,15 @@ class JLCPCBTools(wx.Frame):
     def OnBomHide(self, *_):
         """Hide all parts from the list that have 'in BOM' set to No."""
         self.hide_bom_parts = not self.hide_bom_parts
-        if self.hide_bom_parts:
-            self.hide_bom_button.SetNormalBitmap(
-                loadBitmapScaled(
-                    "",
-                    self.scale_factor,
-                )
-            )
-            self.hide_bom_button.SetNormalBitmap(
-                loadBitmapScaled(
-                    "mdi-eye-outline.png",
-                    self.scale_factor,
-                )
-            )
-            self.hide_bom_button.SetLabel("Show excluded BOM")
-        else:
-            self.hide_bom_button.SetNormalBitmap(
-                loadBitmapScaled(
-                    "",
-                    self.scale_factor,
-                )
-            )
-            self.hide_bom_button.SetNormalBitmap(
-                loadBitmapScaled(
-                    "mdi-eye-off-outline.png",
-                    self.scale_factor,
-                )
-            )
-            self.hide_bom_button.SetLabel("Hide excluded BOM")
+        icon = "mdi-eye-outline.png" if self.hide_bom_parts else "mdi-eye-off-outline.png"
+        self.hide_bom_button.SetBitmap(loadBitmapScaled(icon, self.scale_factor))
         self.populate_footprint_list()
 
     def OnPosHide(self, *_):
         """Hide all parts from the list that have 'in pos' set to No."""
         self.hide_pos_parts = not self.hide_pos_parts
-        if self.hide_pos_parts:
-            self.hide_pos_button.SetNormalBitmap(
-                loadBitmapScaled(
-                    "",
-                    self.scale_factor,
-                )
-            )
-            self.hide_pos_button.SetNormalBitmap(
-                loadBitmapScaled(
-                    "mdi-eye-outline.png",
-                    self.scale_factor,
-                )
-            )
-            self.hide_pos_button.SetLabel("Show excluded POS")
-        else:
-            self.hide_pos_button.SetNormalBitmap(
-                loadBitmapScaled(
-                    "",
-                    self.scale_factor,
-                )
-            )
-            self.hide_pos_button.SetNormalBitmap(
-                loadBitmapScaled(
-                    "mdi-eye-off-outline.png",
-                    self.scale_factor,
-                )
-            )
-            self.hide_pos_button.SetLabel("Hide excluded POS")
+        icon = "mdi-eye-outline.png" if self.hide_pos_parts else "mdi-eye-off-outline.png"
+        self.hide_pos_button.SetBitmap(loadBitmapScaled(icon, self.scale_factor))
         self.populate_footprint_list()
 
     def OnFootprintSelected(self, *_):
@@ -787,17 +685,17 @@ class JLCPCBTools(wx.Frame):
     def enable_part_specific_toolbar_buttons(self, state):
         """Control the state of all the buttons that relate to parts in toolbar on the right side."""
         for button in (
-            ID_SELECT_PART,
-            ID_REMOVE_LCSC_NUMBER,
-            ID_SELECT_ALIKE,
-            ID_TOGGLE_BOM_POS,
-            ID_TOGGLE_BOM,
-            ID_TOGGLE_POS,
-            ID_PART_DETAILS,
-            ID_HIDE_BOM,
-            ID_HIDE_POS,
+            self.select_part_button,
+            self.remove_lcsc_number_button,
+            self.select_alike_button,
+            self.toggle_bom_pos_button,
+            self.toggle_bom_button,
+            self.toggle_pos_button,
+            self.part_details_button,
+            self.hide_bom_button,
+            self.hide_pos_button,
         ):
-            self.right_toolbar.EnableTool(button, state)
+            button.Enable(state)
 
     def toggle_bom_pos(self, *_):
         """Toggle the exclude from BOM/POS attribute of a footprint."""
@@ -1038,7 +936,8 @@ class JLCPCBTools(wx.Frame):
         self.fabrication.zip_gerber_excellon()
         self.fabrication.generate_cpl()
         self.fabrication.generate_bom()
-        self.fabrication.delete_previous_fab_version()
+        if self.settings.get("gerber", {}).get("delete_old_versions", False):
+            self.fabrication.delete_previous_fab_version()
 
     def copy_part_lcsc(self, *_):
         """Fetch part details from LCSC and show them in a modal."""

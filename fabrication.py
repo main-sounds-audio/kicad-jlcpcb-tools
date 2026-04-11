@@ -59,18 +59,77 @@ class Fabrication:
         self.gerberdir = os.path.join(self.path, "jlcpcb", "gerber")
         Path(self.gerberdir).mkdir(parents=True, exist_ok=True)
 
+    # ------------------------------------------------------------------
+    # Version string helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _alpha_to_int(s):
+        """Convert an Excel-style column label (A, B, Z, AA…) to a 0-based int."""
+        s = s.upper()
+        val = 0
+        for ch in s:
+            val = val * 26 + (ord(ch) - ord('A') + 1)
+        return val - 1
+
+    @staticmethod
+    def _int_to_alpha(n):
+        """Convert a 0-based int to an Excel-style column label (A, B, Z, AA…)."""
+        result = ""
+        n += 1
+        while n > 0:
+            n, rem = divmod(n - 1, 26)
+            result = chr(ord('A') + rem) + result
+        return result
+
+    def _version_style(self):
+        return self.parent.settings.get("gerber", {}).get("version_style", "integer")
+
+    def _parse_version(self, s):
+        """Parse a version string to a sortable float (or -1 if unrecognised)."""
+        style = self._version_style()
+        if style == "integer":
+            return int(s) if s.isdigit() else -1
+        if style in ("decimal1", "decimal2"):
+            try:
+                return float(s)
+            except ValueError:
+                return -1.0
+        if style == "alpha":
+            if s.isalpha():
+                return float(self._alpha_to_int(s))
+            return -1.0
+        return -1
+
+    def _format_version(self, v):
+        """Format a numeric version value as a string for use in filenames."""
+        style = self._version_style()
+        if style == "integer":
+            return str(int(round(v)))
+        if style == "decimal1":
+            return f"{v:.1f}"
+        if style == "decimal2":
+            return f"{v:.2f}"
+        if style == "alpha":
+            return self._int_to_alpha(int(round(v)))
+        return str(int(round(v)))
+
+    def _version_increment_value(self):
+        """Return the numeric increment for the current style."""
+        style = self._version_style()
+        if style == "decimal1":
+            return 0.1
+        if style == "decimal2":
+            return 0.01
+        return 1.0  # integer and alpha both step by 1
+
     def delete_previous_fab_version(self):
         """Delete output files from the previous version once a new one has been written."""
-        prev = self._fab_version - 1
-        if prev < 0:
+        if not hasattr(self, "_prev_fab_version_str"):
             return
         stem = Path(self.filename).stem
-        candidates = [
-            os.path.join(self.outputdir, f"GERBER-{stem}.{prev}.zip"),
-            os.path.join(self.outputdir, f"CPL-{stem}.{prev}.csv"),
-            os.path.join(self.outputdir, f"BOM-{stem}.{prev}.csv"),
-        ]
-        for f in candidates:
+        for prefix, ext in [("GERBER", "zip"), ("CPL", "csv"), ("BOM", "csv")]:
+            f = os.path.join(self.outputdir, f"{prefix}-{stem}.{self._prev_fab_version_str}.{ext}")
             try:
                 if os.path.exists(f):
                     os.remove(f)
@@ -79,24 +138,41 @@ class Fabrication:
                 self.logger.warning("Could not delete %s: %s", f, exc)
 
     def prepare_fab_version(self):
-        """Scan output directory once and cache the version for this export run."""
+        """Scan output directory, cache the version string for this export run."""
+        auto = self.parent.settings.get("gerber", {}).get("auto_version", True)
+        if not auto:
+            self._fab_version_str = self._format_version(0)
+            self._prev_fab_version_str = None
+            self.logger.info("Auto-version disabled — using fixed version %s", self._fab_version_str)
+            return
+
         stem = Path(self.filename).stem
         prefix = f"GERBER-{stem}."
-        highest = -1
+        highest = -1.0
+        highest_str = None
         try:
             for name in os.listdir(self.outputdir):
                 if name.startswith(prefix) and name.endswith(".zip"):
                     middle = name[len(prefix):-len(".zip")]
-                    if middle.isdigit():
-                        highest = max(highest, int(middle))
+                    val = self._parse_version(middle)
+                    if val > highest:
+                        highest = val
+                        highest_str = middle
         except FileNotFoundError:
             pass
-        self._fab_version = highest + 1
-        self.logger.info("Fab output version: %d", self._fab_version)
+
+        if highest_str is None:
+            next_val = 0.0
+        else:
+            next_val = highest + self._version_increment_value()
+
+        self._prev_fab_version_str = highest_str
+        self._fab_version_str = self._format_version(next_val)
+        self.logger.info("Fab output version: %s (prev: %s)", self._fab_version_str, highest_str)
 
     def next_fab_version(self):
-        """Return the cached version for this export run."""
-        return getattr(self, "_fab_version", 0)
+        """Return the cached version string for this export run."""
+        return getattr(self, "_fab_version_str", "0")
 
     def fill_zones(self):
         """Refill copper zones following user prompt."""
@@ -124,13 +200,12 @@ class Fabrication:
     def run_drc(self):
         """Run DRC via kicad-cli after zone fill and return a list of error descriptions.
 
-        Saves the current in-memory board state (including the fresh zone fill)
-        to a temporary file alongside the original so that relative design-rule
-        references resolve correctly, then invokes kicad-cli pcb drc and parses
-        the JSON output.  Returns an empty list if DRC passes or if kicad-cli
-        cannot be found.
+        Saves the board to an isolated temp directory in /tmp so that KiCad's
+        background project-file and backup creation never touches the project
+        folder.  The entire temp directory is removed with shutil.rmtree on exit.
         """
         import json
+        import shutil
         import subprocess
         import tempfile
 
@@ -139,12 +214,11 @@ class Fabrication:
             self.logger.warning("kicad-cli not found — DRC skipped")
             return []
 
-        board_dir = os.path.dirname(self.board.GetFileName())
-        tmp_fd, tmp_board = tempfile.mkstemp(suffix=".kicad_pcb", dir=board_dir)
-        os.close(tmp_fd)
-        tmp_report = tmp_board.replace(".kicad_pcb", "_drc.json")
-
+        tmp_dir = tempfile.mkdtemp(prefix="jlcpcb_drc_")
         try:
+            tmp_board = os.path.join(tmp_dir, "board_check.kicad_pcb")
+            tmp_report = os.path.join(tmp_dir, "drc_report.json")
+
             self.board.Save(tmp_board)
             subprocess.run(
                 [kicad_cli, "pcb", "drc",
@@ -172,23 +246,7 @@ class Fabrication:
             self.logger.warning("DRC check could not be completed: %s", exc)
             return []
         finally:
-            # board.Save() causes KiCad to also create a .kicad_pro project file
-            # and a -backups directory alongside the temp board — clean all of them up.
-            stem = tmp_board[:-len(".kicad_pcb")]
-            tmp_pro = stem + ".kicad_pro"
-            tmp_backups = stem + "-backups"
-            for f in (tmp_board, tmp_report, tmp_pro):
-                try:
-                    if os.path.exists(f):
-                        os.remove(f)
-                except Exception:
-                    pass
-            try:
-                import shutil as _shutil
-                if os.path.isdir(tmp_backups):
-                    _shutil.rmtree(tmp_backups)
-            except Exception:
-                pass
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
     def fix_rotation(self, footprint):
         """Fix the rotation of footprints in order to be correct for JLCPCB."""
