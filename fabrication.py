@@ -59,6 +59,45 @@ class Fabrication:
         self.gerberdir = os.path.join(self.path, "jlcpcb", "gerber")
         Path(self.gerberdir).mkdir(parents=True, exist_ok=True)
 
+    def delete_previous_fab_version(self):
+        """Delete output files from the previous version once a new one has been written."""
+        prev = self._fab_version - 1
+        if prev < 0:
+            return
+        stem = Path(self.filename).stem
+        candidates = [
+            os.path.join(self.outputdir, f"GERBER-{stem}.{prev}.zip"),
+            os.path.join(self.outputdir, f"CPL-{stem}.{prev}.csv"),
+            os.path.join(self.outputdir, f"BOM-{stem}.{prev}.csv"),
+        ]
+        for f in candidates:
+            try:
+                if os.path.exists(f):
+                    os.remove(f)
+                    self.logger.info("Deleted old fab file: %s", os.path.basename(f))
+            except Exception as exc:
+                self.logger.warning("Could not delete %s: %s", f, exc)
+
+    def prepare_fab_version(self):
+        """Scan output directory once and cache the version for this export run."""
+        stem = Path(self.filename).stem
+        prefix = f"GERBER-{stem}."
+        highest = -1
+        try:
+            for name in os.listdir(self.outputdir):
+                if name.startswith(prefix) and name.endswith(".zip"):
+                    middle = name[len(prefix):-len(".zip")]
+                    if middle.isdigit():
+                        highest = max(highest, int(middle))
+        except FileNotFoundError:
+            pass
+        self._fab_version = highest + 1
+        self.logger.info("Fab output version: %d", self._fab_version)
+
+    def next_fab_version(self):
+        """Return the cached version for this export run."""
+        return getattr(self, "_fab_version", 0)
+
     def fill_zones(self):
         """Refill copper zones following user prompt."""
         if self.parent.settings.get("gerber", {}).get("fill_zones", True):
@@ -133,9 +172,23 @@ class Fabrication:
             self.logger.warning("DRC check could not be completed: %s", exc)
             return []
         finally:
-            for f in (tmp_board, tmp_report):
-                if os.path.exists(f):
-                    os.remove(f)
+            # board.Save() causes KiCad to also create a .kicad_pro project file
+            # and a -backups directory alongside the temp board — clean all of them up.
+            stem = tmp_board[:-len(".kicad_pcb")]
+            tmp_pro = stem + ".kicad_pro"
+            tmp_backups = stem + "-backups"
+            for f in (tmp_board, tmp_report, tmp_pro):
+                try:
+                    if os.path.exists(f):
+                        os.remove(f)
+                except Exception:
+                    pass
+            try:
+                import shutil as _shutil
+                if os.path.isdir(tmp_backups):
+                    _shutil.rmtree(tmp_backups)
+            except Exception:
+                pass
 
     def fix_rotation(self, footprint):
         """Fix the rotation of footprints in order to be correct for JLCPCB."""
@@ -376,7 +429,8 @@ class Fabrication:
 
     def zip_gerber_excellon(self):
         """Zip Gerber and Excellon files, ready for upload to JLCPCB."""
-        zipname = f"GERBER-{Path(self.filename).stem}.zip"
+        version = self.next_fab_version()
+        zipname = f"GERBER-{Path(self.filename).stem}.{version}.zip"
         with ZipFile(
             os.path.join(self.outputdir, zipname),
             "w",
@@ -395,7 +449,8 @@ class Fabrication:
 
     def generate_cpl(self):
         """Generate placement file (CPL)."""
-        cplname = f"CPL-{Path(self.filename).stem}.csv"
+        version = self.next_fab_version()
+        cplname = f"CPL-{Path(self.filename).stem}.{version}.csv"
         self.corrections = self.parent.library.get_all_correction_data()
         aux_orgin = self.board.GetDesignSettings().GetAuxOrigin()
         add_without_lcsc = self.parent.settings.get("gerber", {}).get(
@@ -441,7 +496,8 @@ class Fabrication:
 
     def generate_bom(self):
         """Generate BOM file."""
-        bomname = f"BOM-{Path(self.filename).stem}.csv"
+        version = self.next_fab_version()
+        bomname = f"BOM-{Path(self.filename).stem}.{version}.csv"
         add_without_lcsc = self.parent.settings.get("gerber", {}).get(
             "lcsc_bom_cpl", True
         )

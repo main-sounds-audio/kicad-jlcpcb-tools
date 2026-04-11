@@ -89,20 +89,20 @@ class KicadProvider:
         return kicad_pcbnew
 
 
-class JLCPCBTools(wx.Dialog):
-    """JLCPCBTools main dialog."""
+class JLCPCBTools(wx.Frame):
+    """JLCPCBTools main window."""
 
     def __init__(self, parent, kicad_provider=KicadProvider()):
         while not wx.GetApp():
             time.sleep(1)
-        wx.Dialog.__init__(
+        wx.Frame.__init__(
             self,
             parent,
             id=wx.ID_ANY,
             title=f"JLCPCB Tools [ {getVersion()} ]",
             pos=wx.DefaultPosition,
             size=wx.Size(1300, 800),
-            style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER | wx.MAXIMIZE_BOX,
+            style=wx.DEFAULT_FRAME_STYLE | wx.RESIZE_BORDER,
         )
         self.pcbnew = kicad_provider.get_pcbnew()
         self.window = wx.GetTopLevelParent(self)
@@ -232,7 +232,7 @@ class JLCPCBTools(wx.Dialog):
             self,
             wx.ID_ANY,
             wx.DefaultPosition,
-            wx.Size(int(self.scale_factor * 128), -1),
+            wx.Size(int(self.scale_factor * 168), -1),
             wx.TB_VERTICAL | wx.TB_TEXT | wx.TB_NODIVIDER,
         )
 
@@ -490,7 +490,19 @@ class JLCPCBTools(wx.Dialog):
 
         self.SetSizer(layout)
         self.Layout()
-        self.Centre(wx.BOTH)
+
+        # Centre within the usable client area (excludes macOS menu bar).
+        try:
+            display_idx = wx.Display.GetFromWindow(self)
+            if display_idx == wx.NOT_FOUND:
+                display_idx = 0
+            client_area = wx.Display(display_idx).GetClientArea()
+            win_size = self.GetSize()
+            x = client_area.x + max(0, (client_area.width - win_size.width) // 2)
+            y = client_area.y + max(0, (client_area.height - win_size.height) // 2)
+            self.SetPosition(wx.Point(x, y))
+        except Exception:
+            self.Centre(wx.BOTH)
 
         # ---------------------------------------------------------------------
         # ------------------------ Custom Events ------------------------------
@@ -534,7 +546,7 @@ class JLCPCBTools(wx.Dialog):
         self.logger.debug("kicad version: %s", kicad_pcbnew.GetBuildVersion())
 
     def quit_dialog(self, *_):
-        """Destroy dialog on close."""
+        """Destroy window on close."""
         self.logger.info("quit_dialog()")
         root = logging.getLogger()
         with suppress(AttributeError):
@@ -543,7 +555,6 @@ class JLCPCBTools(wx.Dialog):
             root.removeHandler(self.logging_handler2)
 
         self.Destroy()
-        self.EndModal(0)
 
     def init_library(self):
         """Initialize the parts library."""
@@ -1000,19 +1011,20 @@ class JLCPCBTools(wx.Dialog):
                     return
         self.fabrication.fill_zones()
 
-        drc_errors = self.fabrication.run_drc()
-        if drc_errors:
-            preview = "\n".join(drc_errors[:10])
-            if len(drc_errors) > 10:
-                preview += f"\n\n... and {len(drc_errors) - 10} more error(s)"
-            result = wx.MessageBox(
-                f"DRC found {len(drc_errors)} error(s):\n\n{preview}\n\n"
-                "Fix the errors and try again, or click OK to export anyway.",
-                "DRC Errors",
-                wx.OK | wx.CANCEL | wx.ICON_ERROR | wx.CENTER,
-            )
-            if result == wx.CANCEL:
-                return
+        if self.settings.get("gerber", {}).get("run_drc", True):
+            drc_errors = self.fabrication.run_drc()
+            if drc_errors:
+                preview = "\n".join(drc_errors[:10])
+                if len(drc_errors) > 10:
+                    preview += f"\n\n... and {len(drc_errors) - 10} more error(s)"
+                result = wx.MessageBox(
+                    f"DRC found {len(drc_errors)} error(s):\n\n{preview}\n\n"
+                    "Fix the errors and try again, or click OK to export anyway.",
+                    "DRC Errors",
+                    wx.OK | wx.CANCEL | wx.ICON_ERROR | wx.CENTER,
+                )
+                if result == wx.CANCEL:
+                    return
 
         layer_selection = self.layer_selection.GetSelection()
         number = re.search(r"\d+", self.layer_selection.GetString(layer_selection))
@@ -1020,11 +1032,13 @@ class JLCPCBTools(wx.Dialog):
             layer_count = int(number.group(0))
         else:
             layer_count = None
+        self.fabrication.prepare_fab_version()
         self.fabrication.generate_geber(layer_count)
         self.fabrication.generate_excellon()
         self.fabrication.zip_gerber_excellon()
         self.fabrication.generate_cpl()
         self.fabrication.generate_bom()
+        self.fabrication.delete_previous_fab_version()
 
     def copy_part_lcsc(self, *_):
         """Fetch part details from LCSC and show them in a modal."""

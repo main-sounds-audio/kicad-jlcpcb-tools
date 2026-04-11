@@ -6,6 +6,8 @@ from pcbnew import ActionPlugin  # pylint: disable=import-error
 
 from .mainwindow import JLCPCBTools
 
+_open_window = None
+
 
 class JLCPCBPlugin(ActionPlugin):
     """JLCPCBPlugin instance of ActionPlugin."""
@@ -24,7 +26,16 @@ class JLCPCBPlugin(ActionPlugin):
         self._pcbnew_frame = None
 
     def Run(self):
-        """Overwrite Run."""
-        dialog = JLCPCBTools(None)
-        dialog.Center()
-        dialog.Show()
+        """Overwrite Run. Raises the existing window if already open."""
+        global _open_window
+        if _open_window is not None:
+            try:
+                if _open_window.IsShown():
+                    _open_window.Raise()
+                    _open_window.SetFocus()
+                    return
+            except Exception:
+                pass
+        _open_window = JLCPCBTools(None)
+        _open_window.Center()
+        _open_window.Show()
