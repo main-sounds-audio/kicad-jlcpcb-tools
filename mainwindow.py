@@ -285,7 +285,7 @@ class JLCPCBTools(wx.Frame):
 
         self.select_alike_button = _make_btn(
             "mdi-checkbox-multiple-marked.png", "Select alike parts",
-            "Select footprints that are alike", self.select_alike)
+            "Select footprints that are alike", self.select_alike_parts)
 
         self.part_details_button = _make_btn(
             "mdi-text-box-search-outline.png", "Part details",
