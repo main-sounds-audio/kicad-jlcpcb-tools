@@ -214,11 +214,17 @@ class SettingsDialog(wx.Dialog):
         ))
         self.filename_template_ctrl.Bind(wx.EVT_TEXT_ENTER, self.on_template_changed)
         self.filename_template_ctrl.Bind(wx.EVT_KILL_FOCUS, self.on_template_changed)
+        self.filename_template_ctrl.Bind(wx.EVT_TEXT, self._update_filename_preview)
 
         hint_text = wx.StaticText(
             self, label="Variables: (project)  (version)  (date)  (year)  (rev)"
         )
         hint_text.SetFont(_font.Smaller())
+
+        self.filename_preview = wx.StaticText(self, label="")
+        _preview_font = _font.Smaller()
+        _preview_font.SetStyle(wx.FONTSTYLE_ITALIC)
+        self.filename_preview.SetFont(_preview_font)
 
         self.version_style_label = wx.StaticText(self, label="Version style:")
         self.version_style_label.SetFont(_font)
@@ -247,6 +253,7 @@ class SettingsDialog(wx.Dialog):
         template_ctrl_col.Add(template_label, 0)
         template_ctrl_col.Add(self.filename_template_ctrl, 0, wx.EXPAND | wx.TOP, 3)
         template_ctrl_col.Add(hint_text, 0, wx.TOP, 2)
+        template_ctrl_col.Add(self.filename_preview, 0, wx.TOP, 2)
         template_ctrl_col.Add(version_style_row, 0, wx.TOP, 6)
 
         _add_row(self.filename_template_image, template_ctrl_col)
@@ -347,6 +354,7 @@ class SettingsDialog(wx.Dialog):
 
     def update_filename_template(self, value):
         self.filename_template_ctrl.SetValue(str(value))
+        self._update_filename_preview()
 
     def update_delete_old_versions(self, value):
         self.delete_old_versions_setting.SetValue(value)
@@ -362,6 +370,80 @@ class SettingsDialog(wx.Dialog):
 
     def update_font_size(self, value):
         self.font_size_ctrl.SetValue(int(value))
+
+    def _resolve_preview(self, template):
+        """Resolve template variables for display in the preview label."""
+        import datetime
+        import json
+        import os
+        from pathlib import Path
+
+        now = datetime.date.today()
+
+        # Project name from the live board
+        try:
+            project = Path(self.parent.board.GetFileName()).stem
+        except Exception:
+            project = "MyProject"
+
+        # Revision from KiCad title block
+        try:
+            rev = self.parent.board.GetTitleBlock().GetRevision().strip()
+        except Exception:
+            rev = ""
+
+        # Next version: read cache, fall back to "1"
+        version_str = "1"
+        try:
+            fab = self.parent.fabrication
+            style_key = self._version_style_choices[
+                self.version_style_ctrl.GetSelection()
+            ][1]
+            cache_path = os.path.join(
+                os.path.dirname(self.parent.board.GetFileName()),
+                "jlcpcb", "production_files", ".fab_version.json"
+            )
+            cached_val = None
+            if os.path.exists(cache_path):
+                with open(cache_path, encoding="utf-8") as f:
+                    cached_val = float(json.load(f).get("version_value", 0))
+            inc = {"integer": 1.0, "decimal1": 0.1, "decimal2": 0.01, "alpha": 1.0}.get(style_key, 1.0)
+            next_val = (cached_val + inc) if cached_val is not None else 0.0
+            if style_key == "integer":
+                version_str = str(int(round(next_val)))
+            elif style_key == "decimal1":
+                version_str = f"{next_val:.1f}"
+            elif style_key == "decimal2":
+                version_str = f"{next_val:.2f}"
+            elif style_key == "alpha":
+                n = int(round(next_val)) + 1
+                s = ""
+                while n > 0:
+                    n, r = divmod(n - 1, 26)
+                    s = chr(65 + r) + s
+                version_str = s
+        except Exception:
+            pass
+
+        result = template
+        result = result.replace("(project)", project)
+        result = result.replace("(version)", version_str)
+        result = result.replace("(date)", now.strftime("%Y-%m-%d"))
+        result = result.replace("(year)", str(now.year))
+        result = result.replace("(rev)", rev)
+        return result
+
+    def _update_filename_preview(self, event=None):
+        """Refresh the preview label below the template field."""
+        template = self.filename_template_ctrl.GetValue().strip()
+        if template:
+            resolved = self._resolve_preview(template)
+            self.filename_preview.SetLabel(f"→  GERBER-{resolved}.zip")
+        else:
+            self.filename_preview.SetLabel("")
+        self.Layout()
+        if event:
+            event.Skip()
 
     def on_template_changed(self, event):
         """Persist the filename template when the user leaves the field."""
@@ -386,13 +468,14 @@ class SettingsDialog(wx.Dialog):
         self.parent.save_settings()
 
     def on_version_style_changed(self, event):
-        """Persist the chosen version style."""
+        """Persist the chosen version style and refresh the filename preview."""
         idx = self.version_style_ctrl.GetSelection()
         style_key = self._version_style_choices[idx][1]
         wx.PostEvent(
             self.parent,
             UpdateSetting(section="gerber", setting="version_style", value=style_key),
         )
+        self._update_filename_preview()
 
     def load_settings(self):
         """Load settings and initialise all controls."""
