@@ -123,13 +123,84 @@ class Fabrication:
             return 0.01
         return 1.0  # integer and alpha both step by 1
 
-    def delete_previous_fab_version(self):
-        """Delete output files from the previous version once a new one has been written."""
-        if not hasattr(self, "_prev_fab_version_str"):
-            return
+    # ------------------------------------------------------------------
+    # Filename template system
+    # ------------------------------------------------------------------
+
+    def _fab_version_cache_path(self):
+        """Path to the small JSON file that tracks the last export's version."""
+        return os.path.join(self.outputdir, ".fab_version.json")
+
+    def _load_fab_version_cache(self):
+        """Return (version_value: float, prev_stem: str|None) from the cache, or (None, None)."""
+        import json as _json
+        try:
+            with open(self._fab_version_cache_path(), encoding="utf-8") as f:
+                data = _json.load(f)
+            return float(data["version_value"]), data.get("prev_stem")
+        except Exception:
+            return None, None
+
+    def save_fab_version_cache(self):
+        """Persist the version state after a successful export."""
+        import json as _json
+        try:
+            with open(self._fab_version_cache_path(), "w", encoding="utf-8") as f:
+                _json.dump(
+                    {"version_value": self._fab_version_value,
+                     "prev_stem": self._fab_template_stem},
+                    f,
+                )
+        except Exception as exc:
+            self.logger.warning("Could not save version cache: %s", exc)
+
+    def _get_template(self):
+        """Return the current filename template from settings."""
+        return self.parent.settings.get("gerber", {}).get(
+            "filename_template", "(project).(version)"
+        )
+
+    def _resolve_template(self, template, version_value):
+        """Substitute all variables in a filename template string."""
+        import datetime
+        now = datetime.date.today()
+        project = Path(self.filename).stem
+        version_str = self._format_version(version_value)
+        try:
+            rev = self.board.GetTitleBlock().GetRevision().strip()
+        except Exception:
+            rev = ""
+        result = template
+        result = result.replace("(project)", project)
+        result = result.replace("(version)", version_str)
+        result = result.replace("(date)", now.strftime("%Y-%m-%d"))
+        result = result.replace("(year)", str(now.year))
+        result = result.replace("(rev)", rev)
+        return result
+
+    def _scan_existing_version(self):
+        """Fallback: scan existing GERBER-{project}.{version}.zip files (old naming scheme)."""
         stem = Path(self.filename).stem
+        prefix = f"GERBER-{stem}."
+        highest = -1.0
+        try:
+            for name in os.listdir(self.outputdir):
+                if name.startswith(prefix) and name.endswith(".zip"):
+                    middle = name[len(prefix):-len(".zip")]
+                    val = self._parse_version(middle)
+                    if val > highest:
+                        highest = val
+        except FileNotFoundError:
+            pass
+        return highest if highest >= 0 else None
+
+    def delete_previous_fab_version(self):
+        """Delete output files from the previous export once a new one has been written."""
+        prev = getattr(self, "_prev_fab_template_stem", None)
+        if not prev:
+            return
         for prefix, ext in [("GERBER", "zip"), ("CPL", "csv"), ("BOM", "csv")]:
-            f = os.path.join(self.outputdir, f"{prefix}-{stem}.{self._prev_fab_version_str}.{ext}")
+            f = os.path.join(self.outputdir, f"{prefix}-{prev}.{ext}")
             try:
                 if os.path.exists(f):
                     os.remove(f)
@@ -138,63 +209,66 @@ class Fabrication:
                 self.logger.warning("Could not delete %s: %s", f, exc)
 
     def prepare_fab_version(self):
-        """Scan output directory, cache the version string for this export run."""
-        auto = self.parent.settings.get("gerber", {}).get("auto_version", True)
-        if not auto:
-            self._fab_version_str = self._format_version(0)
-            self._prev_fab_version_str = None
-            self.logger.info("Auto-version disabled — using fixed version %s", self._fab_version_str)
-            return
+        """Determine the version for this export run and cache the resolved stems."""
+        template = self._get_template()
 
-        stem = Path(self.filename).stem
-        prefix = f"GERBER-{stem}."
-        highest = -1.0
-        highest_str = None
-        try:
-            for name in os.listdir(self.outputdir):
-                if name.startswith(prefix) and name.endswith(".zip"):
-                    middle = name[len(prefix):-len(".zip")]
-                    val = self._parse_version(middle)
-                    if val > highest:
-                        highest = val
-                        highest_str = middle
-        except FileNotFoundError:
-            pass
+        # Try version cache first (supports templates with (date) etc.)
+        cached_val, prev_stem = self._load_fab_version_cache()
 
-        if highest_str is None:
-            next_val = 0.0
+        if cached_val is None:
+            # No cache yet — fall back to scanning existing files (old naming scheme)
+            cached_val = self._scan_existing_version()
+
+        if cached_val is None:
+            new_val = 0.0
         else:
-            next_val = highest + self._version_increment_value()
+            new_val = cached_val + self._version_increment_value()
 
-        self._prev_fab_version_str = highest_str
-        self._fab_version_str = self._format_version(next_val)
-        self.logger.info("Fab output version: %s (prev: %s)", self._fab_version_str, highest_str)
+        self._fab_version_value = new_val
+        self._prev_fab_template_stem = prev_stem
+        self._fab_template_stem = self._resolve_template(template, new_val)
+        self.logger.info(
+            "Fab output stem: %s (prev: %s)", self._fab_template_stem, prev_stem
+        )
 
     def next_fab_version(self):
-        """Return the cached version string for this export run."""
-        return getattr(self, "_fab_version_str", "0")
+        """Return the fully resolved filename stem for this export run."""
+        return getattr(self, "_fab_template_stem", Path(self.filename).stem)
 
     def update_pcb_version_text(self):
-        """Find PCB text items containing the previous version string and update them.
+        """Replace variable placeholders in PCB text items with their resolved values.
 
-        Requires a previous version to exist (i.e. from the second export onwards).
-        On the first export, place the version text manually on the board — every
-        subsequent export will keep it in sync automatically.  Saves the board if
-        any text items were changed.
+        Scans all PCB_TEXT and PCB_TEXTBOX items on the board.  Any item whose
+        text contains one of the five placeholder strings has it substituted in
+        place, then the board is saved.  Works on the very first export — no
+        previous version is required.
+
+        To use: add a text item to your silkscreen / fab layer containing e.g.
+            v(version)     →  v3
+            (date)         →  2026-04-12
+            © (year)       →  © 2026
         """
         if not self.parent.settings.get("gerber", {}).get("update_pcb_text", True):
             return
-        if not hasattr(self, "_prev_fab_version_str") or not self._prev_fab_version_str:
-            self.logger.info(
-                "No previous version — PCB text update skipped "
-                "(add version text to the board manually for the first export)"
-            )
-            return
 
-        old_ver = self._prev_fab_version_str
-        new_ver = self._fab_version_str
+        import datetime
+        now = datetime.date.today()
+        project = Path(self.filename).stem
+        version_str = self._format_version(getattr(self, "_fab_version_value", 0.0))
+        try:
+            rev = self.board.GetTitleBlock().GetRevision().strip()
+        except Exception:
+            rev = ""
+
+        substitutions = [
+            ("(version)", version_str),
+            ("(date)",    now.strftime("%Y-%m-%d")),
+            ("(year)",    str(now.year)),
+            ("(project)", project),
+            ("(rev)",     rev),
+        ]
+
         updated = []
-
         for item in self.board.GetDrawings():
             try:
                 cls = item.GetClass()
@@ -206,8 +280,10 @@ class Fabrication:
                 text = item.GetText()
             except Exception:
                 continue
-            if old_ver in text:
-                new_text = text.replace(old_ver, new_ver)
+            new_text = text
+            for placeholder, value in substitutions:
+                new_text = new_text.replace(placeholder, value)
+            if new_text != text:
                 item.SetText(new_text)
                 updated.append((text, new_text))
                 self.logger.info("Updated PCB text: %r → %r", text, new_text)
@@ -215,13 +291,9 @@ class Fabrication:
         if updated:
             try:
                 self.board.Save(self.board.GetFileName())
-                self.logger.info(
-                    "Saved board — updated %d version text item(s)", len(updated)
-                )
+                self.logger.info("Saved board — updated %d text item(s)", len(updated))
             except Exception as exc:
-                self.logger.warning(
-                    "Could not save board after updating version text: %s", exc
-                )
+                self.logger.warning("Could not save board after updating PCB text: %s", exc)
 
     def fill_zones(self):
         """Refill copper zones following user prompt."""
@@ -536,8 +608,8 @@ class Fabrication:
 
     def zip_gerber_excellon(self):
         """Zip Gerber and Excellon files, ready for upload to JLCPCB."""
-        version = self.next_fab_version()
-        zipname = f"GERBER-{Path(self.filename).stem}.{version}.zip"
+        stem = self.next_fab_version()
+        zipname = f"GERBER-{stem}.zip"
         with ZipFile(
             os.path.join(self.outputdir, zipname),
             "w",
@@ -556,8 +628,8 @@ class Fabrication:
 
     def generate_cpl(self):
         """Generate placement file (CPL)."""
-        version = self.next_fab_version()
-        cplname = f"CPL-{Path(self.filename).stem}.{version}.csv"
+        stem = self.next_fab_version()
+        cplname = f"CPL-{stem}.csv"
         self.corrections = self.parent.library.get_all_correction_data()
         aux_orgin = self.board.GetDesignSettings().GetAuxOrigin()
         add_without_lcsc = self.parent.settings.get("gerber", {}).get(
@@ -603,8 +675,8 @@ class Fabrication:
 
     def generate_bom(self):
         """Generate BOM file."""
-        version = self.next_fab_version()
-        bomname = f"BOM-{Path(self.filename).stem}.{version}.csv"
+        stem = self.next_fab_version()
+        bomname = f"BOM-{stem}.csv"
         add_without_lcsc = self.parent.settings.get("gerber", {}).get(
             "lcsc_bom_cpl", True
         )

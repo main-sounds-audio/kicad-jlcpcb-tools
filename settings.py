@@ -193,48 +193,63 @@ class SettingsDialog(wx.Dialog):
         _add_row(self.order_number_image, self.order_number_setting)
 
         # ---------------------------------------------------------------------
-        # Auto-increment version  — mdi-lead-pencil.png (edit/version icon)
-        # The row contains the checkbox; below it (same grid cell, second row)
-        # sits the increment spinner.
+        # Filename template  — mdi-lead-pencil.png
+        # Text field for the output filename template, plus version-style
+        # dropdown below it.
         # ---------------------------------------------------------------------
-        self.auto_version_image = _icon("mdi-lead-pencil.png")
+        self.filename_template_image = _icon("mdi-lead-pencil.png")
 
-        self.auto_version_setting = _checkbox(
-            "Auto-increment output version number",
-            "gerber_auto_version",
-            "Append an incrementing version number to each export (e.g. BoardName.3.zip)",
+        template_label = wx.StaticText(self, label="Output filename template:")
+        template_label.SetFont(_font)
+
+        self.filename_template_ctrl = wx.TextCtrl(
+            self, id=wx.ID_ANY, value="",
+            style=wx.TE_PROCESS_ENTER,
         )
+        self.filename_template_ctrl.SetFont(_font)
+        self.filename_template_ctrl.SetToolTip(wx.ToolTip(
+            "Template for output filenames.\n"
+            "Variables: (project)  (version)  (date)  (year)  (rev)\n"
+            "Example: (date) - My Pedal v(version)"
+        ))
+        self.filename_template_ctrl.Bind(wx.EVT_TEXT_ENTER, self.on_template_changed)
+        self.filename_template_ctrl.Bind(wx.EVT_KILL_FOCUS, self.on_template_changed)
+
+        hint_text = wx.StaticText(
+            self, label="Variables: (project)  (version)  (date)  (year)  (rev)"
+        )
+        hint_text.SetFont(_font.Smaller())
 
         self.version_style_label = wx.StaticText(self, label="Version style:")
         self.version_style_label.SetFont(_font)
 
-        # Map display label → settings key
         self._version_style_choices = [
-            ("1, 2, 3  (integer)",   "integer"),
-            ("1.0, 1.1, 1.2  (×0.1)", "decimal1"),
+            ("1, 2, 3  (integer)",        "integer"),
+            ("1.0, 1.1, 1.2  (×0.1)",     "decimal1"),
             ("1.00, 1.01, 1.02  (×0.01)", "decimal2"),
-            ("A, B, C  (alphabetic)", "alpha"),
+            ("A, B, C  (alphabetic)",     "alpha"),
         ]
         self.version_style_ctrl = wx.Choice(
             self, id=wx.ID_ANY,
             choices=[c[0] for c in self._version_style_choices],
         )
         self.version_style_ctrl.SetFont(_font)
-        self.version_style_ctrl.SetToolTip(
-            wx.ToolTip("How output file version numbers are formatted and incremented")
-        )
+        self.version_style_ctrl.SetToolTip(wx.ToolTip(
+            "How (version) is formatted and incremented each export"
+        ))
         self.version_style_ctrl.Bind(wx.EVT_CHOICE, self.on_version_style_changed)
 
-        increment_row = wx.BoxSizer(wx.HORIZONTAL)
-        increment_row.Add(self.version_style_label, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 6)
-        increment_row.Add(self.version_style_ctrl, 0, wx.ALIGN_CENTER_VERTICAL)
+        version_style_row = wx.BoxSizer(wx.HORIZONTAL)
+        version_style_row.Add(self.version_style_label, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 6)
+        version_style_row.Add(self.version_style_ctrl, 0, wx.ALIGN_CENTER_VERTICAL)
 
-        # Stack checkbox + spinner in a vertical sizer for the right column
-        auto_version_ctrl_col = wx.BoxSizer(wx.VERTICAL)
-        auto_version_ctrl_col.Add(self.auto_version_setting, 0, wx.ALIGN_CENTER_VERTICAL)
-        auto_version_ctrl_col.Add(increment_row, 0, wx.TOP | wx.LEFT, 4)
+        template_ctrl_col = wx.BoxSizer(wx.VERTICAL)
+        template_ctrl_col.Add(template_label, 0)
+        template_ctrl_col.Add(self.filename_template_ctrl, 0, wx.EXPAND | wx.TOP, 3)
+        template_ctrl_col.Add(hint_text, 0, wx.TOP, 2)
+        template_ctrl_col.Add(version_style_row, 0, wx.TOP, 6)
 
-        _add_row(self.auto_version_image, auto_version_ctrl_col)
+        _add_row(self.filename_template_image, template_ctrl_col)
 
         # ---------------------------------------------------------------------
         # Delete old versions  — mdi-trash-can-outline.png
@@ -330,10 +345,8 @@ class SettingsDialog(wx.Dialog):
     def update_order_number(self, value):
         self.order_number_setting.SetValue(value)
 
-    def update_auto_version(self, value):
-        self.auto_version_setting.SetValue(value)
-        self.version_style_ctrl.Enable(value)
-        self.version_style_label.Enable(value)
+    def update_filename_template(self, value):
+        self.filename_template_ctrl.SetValue(str(value))
 
     def update_delete_old_versions(self, value):
         self.delete_old_versions_setting.SetValue(value)
@@ -349,6 +362,19 @@ class SettingsDialog(wx.Dialog):
 
     def update_font_size(self, value):
         self.font_size_ctrl.SetValue(int(value))
+
+    def on_template_changed(self, event):
+        """Persist the filename template when the user leaves the field."""
+        value = self.filename_template_ctrl.GetValue().strip()
+        if not value:
+            value = "(project).(version)"
+            self.filename_template_ctrl.SetValue(value)
+        wx.PostEvent(
+            self.parent,
+            UpdateSetting(section="gerber", setting="filename_template", value=value),
+        )
+        self.parent.save_settings()
+        event.Skip()
 
     def on_font_size_changed(self, event):
         """Persist font size and close/reopen plugin to apply."""
@@ -380,7 +406,7 @@ class SettingsDialog(wx.Dialog):
         self.update_lcsc_priority(gen.get("lcsc_priority", False))
         self.update_lcsc_bom_cpl(g.get("lcsc_bom_cpl", True))
         self.update_order_number(gen.get("order_number", False))
-        self.update_auto_version(g.get("auto_version", True))
+        self.update_filename_template(g.get("filename_template", "(project).(version)"))
         self.update_version_style(g.get("version_style", "integer"))
         self.update_delete_old_versions(g.get("delete_old_versions", False))
         self.update_update_pcb_text(g.get("update_pcb_text", True))
