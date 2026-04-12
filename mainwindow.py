@@ -38,6 +38,7 @@ from .helpers import (
     PLUGIN_PATH,
     GetScaleFactor,
     HighResWxSize,
+    get_is_dnp,
     getVersion,
     loadBitmapScaled,
     set_lcsc_value,
@@ -117,6 +118,10 @@ class JLCPCBTools(wx.Frame):
         self.store: Store
         self.settings = {}
         self.load_settings()
+        self.auto_select_alike = bool(
+            self.settings.get("general", {}).get("select_alike_auto", False)
+        )
+        self.select_alike_in_progress = False
         self.Bind(wx.EVT_CLOSE, self.quit_dialog)
 
         # ---------------------------------------------------------------------
@@ -355,7 +360,7 @@ class JLCPCBTools(wx.Frame):
         )
         params = self.footprint_list.AppendTextColumn(
             "LCSC Params",
-            10,
+            11,
             width=150,
             mode=dv.DATAVIEW_CELL_INERT,
             align=wx.ALIGN_CENTER,
@@ -375,15 +380,18 @@ class JLCPCBTools(wx.Frame):
         pos = self.footprint_list.AppendIconTextColumn(
             "POS", 7, width=50, mode=dv.DATAVIEW_CELL_INERT
         )
+        dnp = self.footprint_list.AppendIconTextColumn(
+            "POP", 8, width=50, mode=dv.DATAVIEW_CELL_INERT
+        )
         correction = self.footprint_list.AppendTextColumn(
             "Correction",
-            8,
+            9,
             width=120,
             mode=dv.DATAVIEW_CELL_INERT,
             align=wx.ALIGN_CENTER,
         )
         side = self.footprint_list.AppendIconTextColumn(
-            "Side", 9, width=50, mode=dv.DATAVIEW_CELL_INERT
+            "Side", 10, width=50, mode=dv.DATAVIEW_CELL_INERT
         )
 
         reference.SetSortable(True)
@@ -394,6 +402,7 @@ class JLCPCBTools(wx.Frame):
         stock.SetSortable(True)
         bom.SetSortable(True)
         pos.SetSortable(False)
+        dnp.SetSortable(True)
         correction.SetSortable(True)
         side.SetSortable(True)
         params.SetSortable(True)
@@ -623,6 +632,7 @@ class JLCPCBTools(wx.Frame):
         corrections = self.library.get_all_correction_data()
         for part in self.store.read_all():
             fp = self.pcbnew.GetBoard().FindFootprintByReference(part["reference"])
+            is_dnp = get_is_dnp(fp)
             # Get part stock and type from library, skip if part number was already looked up before
             if part["lcsc"] and part["lcsc"] not in details:
                 details[part["lcsc"]] = self.library.get_part_details(part["lcsc"])
@@ -642,6 +652,7 @@ class JLCPCBTools(wx.Frame):
                     details.get(part["lcsc"], {}).get("stock", ""),  # stock
                     part["exclude_from_bom"],
                     part["exclude_from_pos"],
+                    int(is_dnp),
                     str(self.get_correction(part, corrections)),
                     str(fp.GetLayer()),
                     params_for_part(details.get(part["lcsc"], {})),
@@ -664,9 +675,15 @@ class JLCPCBTools(wx.Frame):
 
     def OnFootprintSelected(self, *_):
         """Enable the toolbar buttons when a selection was made."""
+        if self.select_alike_in_progress:
+            return
+
         self.enable_part_specific_toolbar_buttons(
             self.footprint_list.GetSelectedItemsCount() > 0
         )
+
+        if self.auto_select_alike and self.footprint_list.GetSelectedItemsCount() == 1:
+            self.select_alike_parts()
 
         # clear the present selections
         selection = self.pcbnew.GetCurrentSelection()
@@ -740,14 +757,29 @@ class JLCPCBTools(wx.Frame):
             set_lcsc_value(fp, "")
             self.partlist_data_model.remove_lcsc_number(item)
 
-    def select_alike(self, *_):
-        """Select all parts that have the same value and footprint."""
+    def select_alike_parts(self, *_):
+        """Select all alike parts, starting from a single selected part."""
         if self.footprint_list.GetSelectedItemsCount() > 1:
             self.logger.warning("Select only one component, please.")
             return
-        item = self.footprint_list.GetSelection()
-        for item in self.partlist_data_model.select_alike(item):
-            self.footprint_list.Select(item)
+        selected_item = self.footprint_list.GetSelection()
+        self.select_alike_in_progress = True
+        try:
+            for alike_item in self.partlist_data_model.select_alike(selected_item):
+                if not self.footprint_list.IsSelected(alike_item):
+                    self.footprint_list.Select(alike_item)
+        finally:
+            self.select_alike_in_progress = False
+
+    def toggle_select_alike(self, e):
+        """Toggle auto-selecting alike parts on selection."""
+        self.auto_select_alike = bool(e.IsChecked())
+        self.settings.setdefault("general", {})["select_alike_auto"] = (
+            self.auto_select_alike
+        )
+        self.save_settings()
+        if self.auto_select_alike and self.footprint_list.GetSelectedItemsCount() == 1:
+            self.select_alike_parts()
 
     def get_part_details(self, *_):
         """Fetch part details from LCSC and show them one after another each in a modal."""
@@ -786,6 +818,10 @@ class JLCPCBTools(wx.Frame):
             self.settings[e.section] = {}
         self.settings[e.section][e.setting] = e.value
         self.save_settings()
+
+        # Refresh library configuration if relevant library settings changed
+        if e.section == "library" and e.setting in ["selected_library", "data_path"]:
+            self.library.refresh_library_config()
 
     def logbox_append(self, e):
         """Write text to the logbox."""
@@ -840,7 +876,8 @@ class JLCPCBTools(wx.Frame):
                 if (
                     isinstance(drawing, kicad_pcbnew.PCB_SHAPE)
                     and drawing.GetShape() == kicad_pcbnew.S_RECT
-                    and drawing.IsFilled()
+                    and ((hasattr(drawing, "IsFilled") and drawing.IsFilled())
+                    or (hasattr(drawing, "IsSolidFill") and drawing.IsSolidFill()))
                 ):
                     corners = drawing.GetRectCorners()
 

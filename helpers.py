@@ -161,9 +161,13 @@ def set_lcsc_value(fp, lcsc: str):
         fp.SetField(lcsc_field.GetName(), lcsc)
     else:
         fp.SetField("LCSC", lcsc)
-        field = fp.GetFieldByName("LCSC")
-        field.SetVisible(False)
-
+        if hasattr(fp, "GetFieldByName"):
+            fp.GetFieldByName("LCSC").SetVisible(False)
+        else:
+            for field in fp.GetFields():
+                if field.GetName() == "LCSC":
+                    field.SetVisible(False)
+                    break
 
 def get_valid_footprints(board):
     """Get all footprints that have a valid reference.
@@ -173,7 +177,7 @@ def get_valid_footprints(board):
     """
     footprints = []
     for fp in board.GetFootprints():
-        if re.match(r"[\w\d-]+", fp.GetReference()) and len(fp.GetReference()) < 8:
+        if re.match(r"[\w\d-]+", fp.GetReference()):
             footprints.append(fp)
     return footprints
 
@@ -202,6 +206,16 @@ def get_exclude_from_bom(footprint):
         return None
     val = footprint.GetAttributes()
     return bool(get_bit(val, EXCLUDE_FROM_BOM))
+
+
+def get_is_dnp(footprint):
+    """Get the runtime 'Do not place' state of a footprint."""
+    if not footprint:
+        return False
+    is_dnp = getattr(footprint, "IsDNP", None)
+    if not callable(is_dnp):
+        return False
+    return bool(is_dnp())
 
 
 def toggle_exclude_from_pos(footprint):

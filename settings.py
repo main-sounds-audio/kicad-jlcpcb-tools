@@ -4,6 +4,8 @@ import logging
 
 import wx  # pylint: disable=import-error
 
+# Import library configuration to populate choices
+from .dblib import LIBRARY_CONFIGS
 from .events import UpdateSetting
 from .helpers import HighResWxSize, loadBitmapScaled
 
@@ -103,6 +105,80 @@ class SettingsDialog(wx.Dialog):
             else:
                 _add_right(icon_widget, ctrl_widget)
             _col[0] += 1
+
+        ##### Library Selection #####
+
+        library_label = wx.StaticText(
+            self,
+            id=wx.ID_ANY,
+            label="Parts Library:",
+            pos=wx.DefaultPosition,
+            size=wx.DefaultSize,
+        )
+
+        library_choices = [config.display_name for config in LIBRARY_CONFIGS.values()]
+        self.library_selected_setting = wx.ComboBox(
+            self,
+            id=wx.ID_ANY,
+            value="",
+            choices=library_choices,
+            pos=wx.DefaultPosition,
+            size=wx.DefaultSize,
+            style=wx.CB_READONLY,
+            name="library_selected_library",
+        )
+
+        self.library_selected_setting.SetToolTip(
+            wx.ToolTip("Select which parts library to use")
+        )
+
+        self.library_selected_setting.Bind(wx.EVT_COMBOBOX, self.update_settings)
+
+        library_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        library_sizer.Add(library_label, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
+        library_sizer.Add(self.library_selected_setting, 1, wx.ALL | wx.EXPAND, 5)
+
+        ##### Library Data Directory #####
+
+        library_data_path_label = wx.StaticText(
+            self,
+            id=wx.ID_ANY,
+            label="Database directory:",
+            pos=wx.DefaultPosition,
+            size=wx.DefaultSize,
+        )
+
+        self.library_data_path_setting = wx.DirPickerCtrl(
+            self,
+            id=wx.ID_ANY,
+            path="",
+            message="Choose folder for global library database files",
+            pos=wx.DefaultPosition,
+            size=wx.DefaultSize,
+            style=wx.DIRP_DEFAULT_STYLE | wx.DIRP_USE_TEXTCTRL,
+            name="library_data_path",
+        )
+
+        self.library_data_path_setting.SetToolTip(
+            wx.ToolTip(
+                "Override where the global library database files are stored."
+                " If you change this, you may want to copy existing mapping and"
+                " corrections files from the old location to the new one to avoid"
+                " losing existing mappings and corrections."
+            )
+        )
+
+        self.library_data_path_setting.Bind(
+            wx.EVT_DIRPICKER_CHANGED, self.update_settings
+        )
+
+        library_data_path_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        library_data_path_sizer.Add(
+            library_data_path_label, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5
+        )
+        library_data_path_sizer.Add(
+            self.library_data_path_setting, 1, wx.ALL | wx.EXPAND, 5
+        )
 
         # ---------------------------------------------------------------------
         # Tented vias
@@ -316,8 +392,16 @@ class SettingsDialog(wx.Dialog):
         columns.Add(wx.StaticLine(self, style=wx.LI_VERTICAL), 0, wx.EXPAND | wx.TOP | wx.BOTTOM, 16)
         columns.Add(right_grid, 1, wx.ALL | wx.EXPAND, 16)
 
+        # Library controls sit below the two-column grid (they're text-based,
+        # not icon+checkbox, so they don't fit the icon grid style)
+        lib_section = wx.BoxSizer(wx.VERTICAL)
+        lib_section.Add(library_sizer, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 8)
+        lib_section.Add(library_data_path_sizer, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 8)
+
         outer = wx.BoxSizer(wx.VERTICAL)
         outer.Add(columns, 1, wx.EXPAND)
+        outer.Add(wx.StaticLine(self), 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 8)
+        outer.Add(lib_section, 0, wx.EXPAND | wx.TOP, 8)
         self.SetSizer(outer)
         self.Layout()
         self.Centre(wx.BOTH)
@@ -361,6 +445,18 @@ class SettingsDialog(wx.Dialog):
 
     def update_update_pcb_text(self, value):
         self.update_pcb_text_setting.SetValue(value)
+
+    def update_selected_library(self, library_key):
+        """Select the correct library in the dropdown."""
+        if library_key in LIBRARY_CONFIGS:
+            display_name = LIBRARY_CONFIGS[library_key].display_name
+            self.library_selected_setting.SetStringSelection(display_name)
+
+    def update_data_path(self, data_path):
+        """Show the configured (or default) database directory."""
+        value = data_path.strip() if isinstance(data_path, str) else ""
+        effective_path = value if value else self.parent.library.datadir
+        self.library_data_path_setting.SetPath(effective_path)
 
     def update_version_style(self, style_key):
         """Select the correct item in the version style dropdown."""
@@ -494,11 +590,24 @@ class SettingsDialog(wx.Dialog):
         self.update_delete_old_versions(g.get("delete_old_versions", False))
         self.update_update_pcb_text(g.get("update_pcb_text", True))
         self.update_font_size(gen.get("font_size", 11))
+        lib = self.parent.settings.get("library", {})
+        self.update_selected_library(lib.get("selected_library", "current-parts"))
+        self.update_data_path(lib.get("data_path", ""))
 
     def update_settings(self, event):
         """Persist a changed setting."""
         section, name = event.GetEventObject().GetName().split("_", 1)
-        value = event.GetEventObject().GetValue()
+        # DirPickerCtrl exposes GetPath rather than GetValue
+        if hasattr(event.GetEventObject(), "GetPath"):
+            value = event.GetEventObject().GetPath()
+        else:
+            value = event.GetEventObject().GetValue()
+        # Library dropdown: convert display name back to settings key
+        if section == "library" and name == "selected_library":
+            for key, config in LIBRARY_CONFIGS.items():
+                if config.display_name == value:
+                    value = key
+                    break
         getattr(self, f"update_{name}")(value)
         wx.PostEvent(
             self.parent,

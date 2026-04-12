@@ -6,13 +6,14 @@ import logging
 import os
 from pathlib import Path
 import sqlite3
-from threading import Thread
+from threading import Lock, Thread
 import time
 from typing import NamedTuple, Optional
 
 import requests  # pylint: disable=import-error
 import wx  # pylint: disable=import-error
 
+from .dblib import DEFAULT_LIBRARY, LIBRARY_CONFIGS
 from .events import (
     DownloadCompletedEvent,
     DownloadProgressEvent,
@@ -20,6 +21,7 @@ from .events import (
     MessageEvent,
 )
 from .helpers import PLUGIN_PATH, dict_factory, natural_sort_collation
+from .partselector_columns import DB_FIELDS, SORTABLE_COLUMN_INDEX_TO_DB
 from .unzip_parts import unzip_parts
 
 
@@ -47,8 +49,44 @@ class Library:
         self.parent = parent
         self.order_by = "LCSC Part"
         self.order_dir = "ASC"
-        self.datadir = os.path.join(PLUGIN_PATH, "jlcpcb")
-        self.partsdb_file = os.path.join(self.datadir, "parts-fts5.db")
+        self.datadir = ""
+        self.selected_library = DEFAULT_LIBRARY
+        self.partsdb_file = ""
+        self.rotationsdb_file = ""
+        self.localcorrectionsdb_file = ""
+        self.globalcorrectionsdb_file = ""
+        self.correctionsdb_file = ""
+        self.mappingsdb_file = ""
+        self.state = None
+        self.download_lock = Lock()
+        self.category_map = {}
+
+        self.refresh_library_config()
+
+        self.logger.debug("partsdb_file %s", self.partsdb_file)
+        self.logger.debug("sqlite.sqlite_version %s", sqlite3.sqlite_version)
+
+    def _resolve_data_directory(self):
+        """Resolve the directory where global database files are stored."""
+        configured = self.parent.settings.get("library", {}).get("data_path", "")
+        if isinstance(configured, str) and configured.strip():
+            return os.path.abspath(os.path.expanduser(configured.strip()))
+        return os.path.join(PLUGIN_PATH, "jlcpcb")
+
+    def refresh_library_config(self):
+        """Refresh library configuration from settings."""
+        self.datadir = self._resolve_data_directory()
+
+        # Get selected library from settings, default to all-parts
+        selected_library = self.parent.settings.get("library", {}).get(
+            "selected_library", DEFAULT_LIBRARY
+        )
+        if selected_library not in LIBRARY_CONFIGS:
+            selected_library = DEFAULT_LIBRARY
+
+        self.selected_library = selected_library
+        library_config = LIBRARY_CONFIGS[selected_library]
+        self.partsdb_file = os.path.join(self.datadir, library_config.name)
         self.rotationsdb_file = os.path.join(self.datadir, "rotations.db")
         self.localcorrectionsdb_file = os.path.join(
             self.parent.project_path, "jlcpcb", "project.db"
@@ -60,14 +98,17 @@ class Library:
             else self.localcorrectionsdb_file
         )
         self.mappingsdb_file = os.path.join(self.datadir, "mappings.db")
-        self.state = None
         self.category_map = {}
-
-        self.logger.debug("partsdb_file %s", self.partsdb_file)
-        self.logger.debug("sqlite.sqlite_version %s", sqlite3.sqlite_version)
 
         self.setup()
         self.check_library()
+
+        self.logger.debug(
+            "Library configuration refreshed. Selected: %s, Data directory: %s, Database: %s",
+            self.selected_library,
+            self.datadir,
+            self.partsdb_file,
+        )
 
     def setup(self):
         """Check if folders and database exist, setup if not."""
@@ -157,21 +198,13 @@ class Library:
 
     def set_order_by(self, n):
         """Set which value we want to order by when getting data from the database."""
-        order_by = [
-            "LCSC Part",
-            "MFR.Part",
-            "Package",
-            "Solder Joint",
-            "Library Type",
-            "Stock",
-            "Manufacturer",
-            "Description",
-            "Price",
-        ]
-        if self.order_by == order_by[n] and self.order_dir == "ASC":
+        column = SORTABLE_COLUMN_INDEX_TO_DB.get(n)
+        if column is None:
+            return
+        if self.order_by == column and self.order_dir == "ASC":
             self.order_dir = "DESC"
         else:
-            self.order_by = order_by[n]
+            self.order_by = column
             self.order_dir = "ASC"
 
     def search(self, parameters):
@@ -185,21 +218,8 @@ class Library:
         ):
             return []
 
-        # Note: this must mach the widget order in PartSelectorDialog init and
-        # populate_part_list in parselector.py
-        columns = [
-            "LCSC Part",
-            "MFR.Part",
-            "Package",
-            "Solder Joint",
-            "Library Type",
-            "Stock",
-            "Manufacturer",
-            "Description",
-            "Price",
-            "First Category",
-        ]
-        s = ",".join(f'"{c}"' for c in columns)
+        # Note: must match the shared part selector column definitions.
+        s = ",".join(f'"{c}"' for c in DB_FIELDS)
         query = f"SELECT {s} FROM parts WHERE "
 
         match_chunks = []
@@ -469,20 +489,59 @@ class Library:
 
     def update(self):
         """Update the sqlite parts database from the JLCPCB CSV."""
-        Thread(target=self.download).start()
+        with self.download_lock:
+            if self.state == LibraryState.DOWNLOAD_RUNNING:
+                self.logger.info(
+                    "Download already running, ignoring duplicate request."
+                )
+                return
+            self.state = LibraryState.DOWNLOAD_RUNNING
+        try:
+            Thread(target=self._download_wrapper).start()
+        except Exception:
+            with self.download_lock:
+                self.state = LibraryState.INITIALIZED
+            raise
+
+    def _download_wrapper(self):
+        """Run the download worker with guaranteed state cleanup."""
+        try:
+            self.download()
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            self.logger.exception("Unexpected error while downloading parts database")
+            wx.PostEvent(
+                self.parent,
+                MessageEvent(
+                    title="Download Error",
+                    text=f"Unexpected error while downloading parts database: {exc}",
+                    style="error",
+                ),
+            )
+        finally:
+            with self.download_lock:
+                self.state = LibraryState.INITIALIZED
 
     def download(self):
         """Actual worker thread that downloads and imports the parts data."""
-        self.state = LibraryState.DOWNLOAD_RUNNING
         start = time.time()
         wx.PostEvent(self.parent, DownloadStartedEvent())
 
+        # Get library configuration for selected library
+        library_config = LIBRARY_CONFIGS[self.selected_library]
+
         # Define basic variables
         url_stub = "https://bouni.github.io/kicad-jlcpcb-tools/"
-        cnt_file = "chunk_num_fts5.txt"
-        progress_file = os.path.join(self.datadir, "progress.txt")
-        chunk_file_stub = "parts-fts5.db.zip."
+        cnt_file = library_config.chunk_file_name
+        progress_file = os.path.join(self.datadir, f"{library_config.name}.progress")
+        chunk_file_stub = library_config.name.replace(".db", ".db.zip.")
         completed_chunks = set()
+
+        self.logger.debug("Starting download of JLCPCB parts database...")
+        self.logger.debug(
+            "Using library: %s (basefile %s)",
+            self.selected_library,
+            chunk_file_stub,
+        )
 
         # Check if there is a progress file
         if os.path.exists(progress_file):
@@ -620,7 +679,7 @@ class Library:
         # Combine and extract downloaded files
         self.logger.debug("Combining and extracting zip part files...")
         try:
-            unzip_parts(self.parent, self.datadir)
+            unzip_parts(self.parent, self.datadir, library_config.name + ".zip")
         except Exception as e:
             wx.PostEvent(
                 self.parent,
@@ -789,7 +848,7 @@ class Library:
             except sqlite3.OperationalError:
                 return
 
-    def get_parts_db_info(self) -> Optional[PartsDatabaseInfo]:
+    def get_parts_db_info(self) -> Optional[PartsDatabaseInfo]:  # noqa: UP045
         """Retrieve the database information."""
         with contextlib.closing(sqlite3.connect(self.partsdb_file)) as con, con as cur:
             try:

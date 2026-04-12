@@ -6,6 +6,7 @@ import re
 import wx.dataview as dv
 
 from .helpers import loadIconScaled
+from .partselector_columns import COLUMN_INDEX, MODEL_COLUMN_TYPES
 
 
 class PartListDataModel(dv.PyDataViewModel):
@@ -23,9 +24,10 @@ class PartListDataModel(dv.PyDataViewModel):
             "STOCK_COL": 5,
             "BOM_COL": 6,
             "POS_COL": 7,
-            "ROT_COL": 8,
-            "SIDE_COL": 9,
-            "PARAMS_COL": 10,
+            "DNP_COL": 8,
+            "ROT_COL": 9,
+            "SIDE_COL": 10,
+            "PARAMS_COL": 11,
         }
 
         self.bom_pos_icons = [
@@ -73,6 +75,7 @@ class PartListDataModel(dv.PyDataViewModel):
             "string",
             "wxDataViewIconText",
             "wxDataViewIconText",
+            "wxDataViewIconText",
             "string",
             "wxDataViewIconText",
             "string",
@@ -101,6 +104,7 @@ class PartListDataModel(dv.PyDataViewModel):
         if col in [
             self.columns["BOM_COL"],
             self.columns["POS_COL"],
+            self.columns["DNP_COL"],
             self.columns["SIDE_COL"],
         ]:
             icon = row[col]
@@ -113,6 +117,7 @@ class PartListDataModel(dv.PyDataViewModel):
         if col in [
             self.columns["BOM_COL"],
             self.columns["POS_COL"],
+            self.columns["DNP_COL"],
             self.columns["SIDE_COL"],
         ]:
             return False
@@ -154,6 +159,9 @@ class PartListDataModel(dv.PyDataViewModel):
         )
         data[self.columns["POS_COL"]] = self.get_bom_pos_icon(
             data[self.columns["POS_COL"]]
+        )
+        data[self.columns["DNP_COL"]] = self.get_bom_pos_icon(
+            data[self.columns["DNP_COL"]]
         )
         data[self.columns["SIDE_COL"]] = self.get_side_icon(
             data[self.columns["SIDE_COL"]]
@@ -245,18 +253,7 @@ class PartSelectorDataModel(dv.PyDataViewModel):
     def __init__(self):
         super().__init__()
         self.data = []
-        self.columns = {
-            "LCSC_COL": 0,
-            "MFR_NUMBER_COL": 1,
-            "PACKAGE_COL": 2,
-            "PIN_COL": 3,
-            "TYPE_COL": 4,
-            "PARAMS_COL": 5,
-            "STOCK_COL": 6,
-            "MFR_COL": 7,
-            "DESCR_COL": 8,
-            "PRICE_COL": 9,
-        }
+        self.columns = dict(COLUMN_INDEX)
 
         self.logger = logging.getLogger(__name__)
 
@@ -274,18 +271,7 @@ class PartSelectorDataModel(dv.PyDataViewModel):
 
     def GetColumnType(self, col):
         """Get type of each column."""
-        columntypes = (
-            "string",
-            "string",
-            "string",
-            "string",
-            "string",
-            "string",
-            "string",
-            "string",
-            "string",
-        )
-        return columntypes[col]
+        return MODEL_COLUMN_TYPES[col]
 
     def GetChildren(self, parent, children):
         """Get child items of a parent."""
@@ -350,12 +336,12 @@ class PartSelectorDataModel(dv.PyDataViewModel):
 
     def get_lcsc(self, item):
         """Get the reference of an item."""
-        return self.ItemToObject(item)[self.columns["LCSC_COL"]]
+        return self.ItemToObject(item)[self.columns["lcsc"]]
 
     def get_type(self, item):
         """Get the reference of an item."""
-        return self.ItemToObject(item)[self.columns["TYPE_COL"]]
+        return self.ItemToObject(item)[self.columns["type"]]
 
     def get_stock(self, item):
         """Get the reference of an item."""
-        return self.ItemToObject(item)[self.columns["STOCK_COL"]]
+        return self.ItemToObject(item)[self.columns["stock"]]
