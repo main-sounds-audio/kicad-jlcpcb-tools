@@ -33,6 +33,7 @@ from pcbnew import (  # pylint: disable=import-error
 )
 
 from .helpers import get_is_dnp
+from .kicad_cli import resolve_kicad_cli_path
 
 # Compatibility hack for V6 / V7 / V7.99
 try:
@@ -305,21 +306,6 @@ class Fabrication:
             filler.Fill(zones)
             Refresh()
 
-    def _find_kicad_cli(self):
-        """Locate the kicad-cli executable, returning its path or None."""
-        import shutil
-        candidates = [
-            "kicad-cli",
-            "/Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli",
-            "/usr/local/bin/kicad-cli",
-            "/usr/bin/kicad-cli",
-        ]
-        for c in candidates:
-            found = shutil.which(c) or (os.path.isfile(c) and c)
-            if found:
-                return found
-        return None
-
     def run_drc(self):
         """Run DRC via kicad-cli after zone fill and return a list of error descriptions.
 
@@ -332,7 +318,8 @@ class Fabrication:
         import subprocess
         import tempfile
 
-        kicad_cli = self._find_kicad_cli()
+        import pcbnew as _pcbnew
+        kicad_cli = resolve_kicad_cli_path(_pcbnew)
         if not kicad_cli:
             self.logger.warning("kicad-cli not found — DRC skipped")
             return []
