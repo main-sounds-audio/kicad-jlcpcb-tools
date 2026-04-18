@@ -334,6 +334,7 @@ class Fabrication:
                 [kicad_cli, "pcb", "drc",
                  "--format", "json",
                  "--severity-error",
+                 "--refill-zones",   # always refill in the temp copy so DRC sees real copper
                  "--output", tmp_report,
                  tmp_board],
                 capture_output=True,
