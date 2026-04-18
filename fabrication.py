@@ -325,6 +325,13 @@ class Fabrication:
             return []
 
         tmp_dir = tempfile.mkdtemp(prefix="jlcpcb_drc_")
+        # kicad-cli writes its "recent projects" list to KiCad's shared config
+        # directory, causing the temp board to appear in KiCad's recent files.
+        # Redirect all kicad-cli config I/O to a throwaway subdir so the real
+        # KiCad config (and recent-projects list) is never touched.
+        fake_config_dir = os.path.join(tmp_dir, "kicad_config")
+        os.makedirs(fake_config_dir, exist_ok=True)
+        cli_env = {**os.environ, "KICAD_CONFIG_HOME": fake_config_dir}
         try:
             tmp_board = os.path.join(tmp_dir, "board_check.kicad_pcb")
             tmp_report = os.path.join(tmp_dir, "drc_report.json")
@@ -355,6 +362,7 @@ class Fabrication:
                 capture_output=True,
                 text=True,
                 timeout=60,
+                env=cli_env,
             )
             if not os.path.exists(tmp_report):
                 self.logger.warning(
