@@ -331,28 +331,37 @@ class Fabrication:
 
             self.board.Save(tmp_board)
 
-            # Try with --refill-zones first so DRC sees real copper fills.
-            # Older kicad-cli builds don't support the flag, so fall back
-            # without it if the report file isn't produced.
-            for cmd_args in (
-                ["--format", "json", "--severity-error", "--refill-zones", "--output", tmp_report, tmp_board],
-                ["--format", "json", "--severity-error",                   "--output", tmp_report, tmp_board],
-            ):
-                result = subprocess.run(
-                    [kicad_cli, "pcb", "drc"] + cmd_args,
-                    capture_output=True,
-                    text=True,
-                    timeout=60,
-                )
-                if os.path.exists(tmp_report):
-                    break
+            # Load the saved copy and fill its zones so kicad-cli DRC sees
+            # real copper fills regardless of the board's current fill state.
+            # We operate on the temp copy so the live board is never modified.
+            try:
+                tmp_board_obj = _pcbnew.LoadBoard(tmp_board)
+                filler = _pcbnew.ZONE_FILLER(tmp_board_obj)
+                filler.Fill(tmp_board_obj.Zones())
+                tmp_board_obj.Save(tmp_board)
+                self.logger.debug("Zone fill applied to DRC temp board")
+            except Exception as fill_exc:
                 self.logger.warning(
-                    "kicad-cli drc attempt failed (rc=%d): %s",
+                    "Zone fill before DRC failed: %s — results may include false positives",
+                    fill_exc,
+                )
+
+            result = subprocess.run(
+                [kicad_cli, "pcb", "drc",
+                 "--format", "json",
+                 "--severity-error",
+                 "--output", tmp_report,
+                 tmp_board],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            if not os.path.exists(tmp_report):
+                self.logger.warning(
+                    "kicad-cli produced no DRC output (rc=%d): %s",
                     result.returncode,
                     (result.stderr or result.stdout).strip()[:200],
                 )
-            else:
-                self.logger.warning("kicad-cli produced no DRC output after all attempts")
                 return []
             with open(tmp_report, encoding="utf-8") as f:
                 data = json.load(f)
