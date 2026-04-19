@@ -106,6 +106,40 @@ class SettingsDialog(wx.Dialog):
                 _add_right(icon_widget, ctrl_widget)
             _col[0] += 1
 
+        ##### Highlight text matches in part selector ######
+
+        highlight_matches_label = wx.StaticText(
+            self,
+            id=wx.ID_ANY,
+            label="Part selector highlighting",
+            pos=wx.DefaultPosition,
+            size=wx.DefaultSize,
+        )
+
+        self.highlight_matches_setting = wx.CheckBox(
+            self,
+            id=wx.ID_ANY,
+            label="Highlight search matches",
+            pos=wx.DefaultPosition,
+            size=wx.DefaultSize,
+            style=0,
+            name="partselector_highlight_matches",
+        )
+
+        self.highlight_matches_setting.SetToolTip(
+            wx.ToolTip("Highlight keyword matches in the part selector search results")
+        )
+
+        self.highlight_matches_setting.Bind(wx.EVT_CHECKBOX, self.update_settings)
+
+        highlight_matches_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        highlight_matches_sizer.Add(
+            highlight_matches_label, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5
+        )
+        highlight_matches_sizer.Add(
+            self.highlight_matches_setting, 0, wx.ALL | wx.EXPAND, 5
+        )
+
         ##### Library Selection #####
 
         library_label = wx.StaticText(
@@ -395,6 +429,7 @@ class SettingsDialog(wx.Dialog):
         # Library controls sit below the two-column grid (they're text-based,
         # not icon+checkbox, so they don't fit the icon grid style)
         lib_section = wx.BoxSizer(wx.VERTICAL)
+        lib_section.Add(highlight_matches_sizer, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 8)
         lib_section.Add(library_sizer, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 8)
         lib_section.Add(library_data_path_sizer, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 8)
 
@@ -445,6 +480,10 @@ class SettingsDialog(wx.Dialog):
 
     def update_update_pcb_text(self, value):
         self.update_pcb_text_setting.SetValue(value)
+
+    def update_highlight_matches(self, enabled):
+        """Update settings dialog according to the settings."""
+        self.highlight_matches_setting.SetValue(bool(enabled))
 
     def update_selected_library(self, library_key):
         """Select the correct library in the dropdown."""
@@ -590,6 +629,8 @@ class SettingsDialog(wx.Dialog):
         self.update_delete_old_versions(g.get("delete_old_versions", False))
         self.update_update_pcb_text(g.get("update_pcb_text", True))
         self.update_font_size(gen.get("font_size", 11))
+        ps = self.parent.settings.get("partselector", {})
+        self.update_highlight_matches(ps.get("highlight_matches", True))
         lib = self.parent.settings.get("library", {})
         self.update_selected_library(lib.get("selected_library", "current-parts"))
         self.update_data_path(lib.get("data_path", ""))
