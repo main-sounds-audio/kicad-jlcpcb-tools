@@ -33,7 +33,6 @@ from pcbnew import (  # pylint: disable=import-error
 )
 
 from .helpers import get_is_dnp
-from .kicad_cli import resolve_kicad_cli_path
 
 # Compatibility hack for V6 / V7 / V7.99
 try:
@@ -326,84 +325,99 @@ class Fabrication:
             Refresh()
 
     def run_drc(self):
-        """Run DRC via kicad-cli after zone fill and return a list of error descriptions.
+        """Run DRC via KiCad SWIG API and return a list of error descriptions.
 
-        Saves the board to an isolated temp directory in /tmp so that KiCad's
-        background project-file and backup creation never touches the project
-        folder.  The entire temp directory is removed with shutil.rmtree on exit.
+        Uses pcbnew.WriteDRCReport() — no subprocess, no temp directory, no
+        kicad-cli dependency, and no KiCad version sensitivity around CLI flags.
+        The live board object is passed directly; fill_zones() is expected to
+        have already run so the board has accurate copper fills in memory.
         """
-        import json
-        import shutil
-        import subprocess
+        import contextlib
         import tempfile
 
         import pcbnew as _pcbnew
-        kicad_cli = resolve_kicad_cli_path(_pcbnew)
-        if not kicad_cli:
-            self.logger.warning("kicad-cli not found — DRC skipped")
+
+        if not hasattr(_pcbnew, "WriteDRCReport"):
+            self.logger.warning("pcbnew.WriteDRCReport not available — DRC skipped")
             return []
 
-        tmp_dir = tempfile.mkdtemp(prefix="jlcpcb_drc_")
-        # kicad-cli writes its "recent projects" list to KiCad's shared config
-        # directory, causing the temp board to appear in KiCad's recent files.
-        # Redirect all kicad-cli config I/O to a throwaway subdir so the real
-        # KiCad config (and recent-projects list) is never touched.
-        fake_config_dir = os.path.join(tmp_dir, "kicad_config")
-        os.makedirs(fake_config_dir, exist_ok=True)
-        cli_env = {**os.environ, "KICAD_CONFIG_HOME": fake_config_dir}
+        tmp_report = None
         try:
-            tmp_board = os.path.join(tmp_dir, "board_check.kicad_pcb")
-            tmp_report = os.path.join(tmp_dir, "drc_report.json")
+            fd, tmp_report = tempfile.mkstemp(suffix=".rpt", prefix="jlcpcb_drc_")
+            os.close(fd)
 
-            self.board.Save(tmp_board)
+            success = bool(_pcbnew.WriteDRCReport(
+                self.board,
+                tmp_report,
+                _pcbnew.EDA_UNITS_MM,
+                False,  # report_all_track_errors
+            ))
 
-            # Load the saved copy and fill its zones so kicad-cli DRC sees
-            # real copper fills regardless of the board's current fill state.
-            # We operate on the temp copy so the live board is never modified.
-            try:
-                tmp_board_obj = _pcbnew.LoadBoard(tmp_board)
-                filler = _pcbnew.ZONE_FILLER(tmp_board_obj)
-                filler.Fill(tmp_board_obj.Zones())
-                tmp_board_obj.Save(tmp_board)
-                self.logger.debug("Zone fill applied to DRC temp board")
-            except Exception as fill_exc:
-                self.logger.warning(
-                    "Zone fill before DRC failed: %s — results may include false positives",
-                    fill_exc,
-                )
-
-            result = subprocess.run(
-                [kicad_cli, "pcb", "drc",
-                 "--format", "json",
-                 "--severity-error",
-                 "--output", tmp_report,
-                 tmp_board],
-                capture_output=True,
-                text=True,
-                timeout=60,
-                env=cli_env,
-            )
-            if not os.path.exists(tmp_report):
-                self.logger.warning(
-                    "kicad-cli produced no DRC output (rc=%d): %s",
-                    result.returncode,
-                    (result.stderr or result.stdout).strip()[:200],
-                )
+            if not success:
+                self.logger.warning("WriteDRCReport returned failure — DRC skipped")
                 return []
-            with open(tmp_report, encoding="utf-8") as f:
-                data = json.load(f)
-            errors = [
-                v.get("description", "Unknown DRC error")
-                for v in data.get("violations", [])
-                if v.get("severity") == "error"
-            ]
+
+            errors = self._parse_drc_report(tmp_report)
             self.logger.info("DRC completed: %d error(s) found", len(errors))
             return errors
+
         except Exception as exc:
             self.logger.warning("DRC check could not be completed: %s", exc)
             return []
         finally:
-            shutil.rmtree(tmp_dir, ignore_errors=True)
+            if tmp_report:
+                with contextlib.suppress(OSError):
+                    os.remove(tmp_report)
+
+    def _parse_drc_report(self, report_path):
+        """Parse a KiCad text DRC report and return a list of error descriptions.
+
+        The report format has a violations section where each item begins with a
+        [RULE_CODE]: message header line followed by detail lines that include a
+        severity field (``; error`` or ``; warning``).  Only error-severity items
+        are returned.  Falls back to a plain count if the per-item format isn't
+        recognised.
+        """
+        with open(report_path, encoding="utf-8") as f:
+            text = f.read()
+
+        # Isolate the violations section between the two summary lines
+        section = re.search(
+            r"\*\* Found \d+ DRC violations \*\*(.*?)"
+            r"(?:\n\*\* Found \d+ unconnected pads \*\*|\n\*\* End of Report \*\*)",
+            text,
+            flags=re.DOTALL,
+        )
+        violations_text = section.group(1) if section else text
+
+        # Each violation block starts with [CODE]: description on its own line
+        headers = list(re.finditer(
+            r"(?m)^\[(?P<code>[^\]]+)\]:\s*(?P<message>.*)$",
+            violations_text,
+        ))
+
+        if not headers:
+            # Couldn't parse per-item blocks — fall back to the summary count
+            match = re.search(r"\*\* Found (\d+) DRC violations \*\*", text)
+            count = int(match.group(1)) if match else 0
+            self.logger.warning(
+                "DRC report lacked per-item severity — reporting %d violation(s) as errors",
+                count,
+            )
+            return [f"DRC violation #{i + 1}" for i in range(count)]
+
+        errors = []
+        for i, header in enumerate(headers):
+            start = header.start()
+            end = headers[i + 1].start() if i + 1 < len(headers) else len(violations_text)
+            block = violations_text[start:end]
+            sev = re.search(r";\s*(error|warning)\b", block, re.IGNORECASE)
+            if sev and sev.group(1).lower() == "error":
+                errors.append(
+                    f"[{header.group('code').strip()}]: {header.group('message').strip()}"
+                )
+
+        return errors
 
     def fix_rotation(self, footprint):
         """Fix the rotation of footprints in order to be correct for JLCPCB."""
