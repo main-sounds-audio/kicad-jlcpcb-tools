@@ -975,6 +975,7 @@ class JLCPCBTools(wx.Frame):
         self.fabrication.generate_cpl()
         self.fabrication.generate_bom()
         self.fabrication.save_fab_version_cache()
+        self.fabrication.revert_pcb_version_text()
         if self.settings.get("gerber", {}).get("delete_old_versions", False):
             self.fabrication.delete_previous_fab_version()
 

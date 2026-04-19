@@ -242,15 +242,20 @@ class Fabrication:
         """Replace variable placeholders in PCB text items with their resolved values.
 
         Scans all PCB_TEXT and PCB_TEXTBOX items on the board.  Any item whose
-        text contains one of the five placeholder strings has it substituted in
-        place, then the board is saved.  Works on the very first export — no
-        previous version is required.
+        text contains one of the five placeholder strings has it substituted
+        in memory only — the board is NOT saved here.  The original template
+        strings are preserved in ``self._pcb_text_originals`` so that
+        ``revert_pcb_version_text()`` can restore them after Gerbers are plotted,
+        leaving the .kicad_pcb file with the placeholders intact and ready for
+        the next export.
 
         To use: add a text item to your silkscreen / fab layer containing e.g.
             v(version)     →  v3
             (date)         →  2026-04-12
             © (year)       →  © 2026
         """
+        self._pcb_text_originals = []   # reset each run
+
         if not self.parent.settings.get("gerber", {}).get("update_pcb_text", True):
             return
 
@@ -271,7 +276,6 @@ class Fabrication:
             ("(rev)",     rev),
         ]
 
-        updated = []
         for item in self.board.GetDrawings():
             try:
                 cls = item.GetClass()
@@ -288,15 +292,30 @@ class Fabrication:
                 new_text = new_text.replace(placeholder, value)
             if new_text != text:
                 item.SetText(new_text)
-                updated.append((text, new_text))
-                self.logger.info("Updated PCB text: %r → %r", text, new_text)
+                self._pcb_text_originals.append((item, text))
+                self.logger.info("PCB text (in memory): %r → %r", text, new_text)
 
-        if updated:
-            try:
-                self.board.Save(self.board.GetFileName())
-                self.logger.info("Saved board — updated %d text item(s)", len(updated))
-            except Exception as exc:
-                self.logger.warning("Could not save board after updating PCB text: %s", exc)
+    def revert_pcb_version_text(self):
+        """Restore original placeholder text after Gerbers have been plotted.
+
+        Called after all fab file generation is complete.  Puts the template
+        strings back into the board items and saves, so the .kicad_pcb file
+        always contains the placeholders rather than the resolved values.
+        """
+        originals = getattr(self, "_pcb_text_originals", [])
+        if not originals:
+            return
+        for item, original_text in originals:
+            item.SetText(original_text)
+        self._pcb_text_originals = []
+        try:
+            self.board.Save(self.board.GetFileName())
+            self.logger.info(
+                "Reverted %d PCB text template(s) — board saved with placeholders intact",
+                len(originals),
+            )
+        except Exception as exc:
+            self.logger.warning("Could not save board after reverting PCB text: %s", exc)
 
     def fill_zones(self):
         """Refill copper zones following user prompt."""
