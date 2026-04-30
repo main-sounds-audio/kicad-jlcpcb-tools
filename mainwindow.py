@@ -39,6 +39,7 @@ from .events import (
     LogboxAppendEvent,
 )
 from .fabrication import Fabrication
+from .generate_hooks import format_hook_error, run_configured_hook
 from .helpers import (
     PLUGIN_PATH,
     GetScaleFactor,
@@ -842,10 +843,11 @@ class JLCPCBTools(wx.Frame):
         with open(os.path.join(PLUGIN_PATH, "settings.json"), encoding="utf-8") as j:
             self.settings = json.load(j)
 
+        changed = False
+
         gerber_settings = self.settings.setdefault("gerber", {})
         highlighting_settings = self.settings.setdefault("highlighting", {})
         partselector_settings = self.settings.setdefault("partselector", {})
-        migrated = False
 
         # Migrate highlight_matches from partselector → highlighting section
         if "matches" not in highlighting_settings:
@@ -853,12 +855,18 @@ class JLCPCBTools(wx.Frame):
                 highlighting_settings["matches"] = partselector_settings.pop(
                     "highlight_matches"
                 )
-                migrated = True
             else:
                 highlighting_settings["matches"] = True
-                migrated = True
+            changed = True
 
-        if migrated:
+        # Migrate force_drc: if force_drc was set but fill_zones wasn't, enable fill_zones
+        if gerber_settings.get("force_drc", False) and not gerber_settings.get(
+            "fill_zones", True
+        ):
+            gerber_settings["fill_zones"] = True
+            changed = True
+
+        if changed:
             self.save_settings()
 
     def decode_mainwindow_highlight_value(
@@ -949,6 +957,63 @@ class JLCPCBTools(wx.Frame):
 
         return count
 
+    def build_generate_hook_env(self, stage, placeholder_count, generation_count):
+        """Build environment variables for configured generation hooks."""
+        board_filename = self.pcbnew.GetBoard().GetFileName()
+        artifact_paths = self.fabrication.get_artifact_paths()
+        env = os.environ.copy()
+        env.update(
+            {
+                "JLCPCB_HOOK_STAGE": stage,
+                "JLCPCB_BOARD_PATH": board_filename,
+                "JLCPCB_PROJECT_DIR": self.project_path,
+                "JLCPCB_OUTPUT_DIR": self.fabrication.outputdir,
+                "JLCPCB_GERBER_DIR": self.fabrication.gerberdir,
+                "JLCPCB_GENERATION_COUNT": str(generation_count),
+                "JLCPCB_PLACEHOLDER_COUNT": str(placeholder_count),
+                "JLCPCB_ARTIFACT_GERBER_ZIP": artifact_paths["gerber_zip"],
+                "JLCPCB_ARTIFACT_BOM_CSV": artifact_paths["bom_csv"],
+                "JLCPCB_ARTIFACT_CPL_CSV": artifact_paths["cpl_csv"],
+            }
+        )
+        return env
+
+    def run_generate_hook(self, stage, env, allow_continue):
+        """Run one configured generation hook and handle UI prompts on failures."""
+        hooks_settings = self.settings.get("hooks", {})
+        result = run_configured_hook(
+            stage=stage,
+            hooks_settings=hooks_settings,
+            env_updates=env,
+            working_dir=self.project_path,
+            logger=self.logger,
+        )
+        if not result.command:
+            return True
+
+        if result.succeeded:
+            return True
+
+        error_text = format_hook_error(result)
+        if allow_continue:
+            dialog = wx.MessageDialog(
+                self,
+                f"The {stage}-generate hook failed.\n\n{error_text}\n\nContinue generation anyway?",
+                "Pre-generate hook failed",
+                wx.YES_NO | wx.NO_DEFAULT | wx.ICON_WARNING | wx.CENTER,
+            )
+            dialog.SetYesNoLabels("Continue", "Cancel")
+            choice = dialog.ShowModal()
+            dialog.Destroy()
+            return choice == wx.ID_YES
+
+        wx.MessageBox(
+            f"The {stage}-generate hook failed after generation completed.\n\n{error_text}",
+            "Post-generate hook failed",
+            style=wx.ICON_WARNING,
+        )
+        return False
+
     def generate_fabrication_data(self, *_):
         """Generate fabrication data."""
         warnings = self.fabrication.get_part_consistency_warnings()
@@ -963,8 +1028,10 @@ class JLCPCBTools(wx.Frame):
             if result == wx.CANCEL:
                 return
 
+        placeholder_count = None
         if self.settings.get("general", {}).get("order_number"):
             count = self.count_order_number_placeholders()
+            placeholder_count = count
             if count == 0:
                 result = wx.MessageBox(
                     "JLC order/serial number placeholder not present! Continue?",
@@ -981,6 +1048,19 @@ class JLCPCBTools(wx.Frame):
                 )
                 if result == wx.CANCEL:
                     return
+
+        if placeholder_count is None:
+            placeholder_count = self.count_order_number_placeholders()
+
+        current_generation_count = self.store.get_generation_count()
+        pre_hook_env = self.build_generate_hook_env(
+            stage="pre",
+            placeholder_count=placeholder_count,
+            generation_count=current_generation_count,
+        )
+        if not self.run_generate_hook("pre", pre_hook_env, allow_continue=True):
+            return
+
         self.fabrication.fill_zones()
 
         if self.settings.get("gerber", {}).get("run_drc", True):
@@ -1006,15 +1086,33 @@ class JLCPCBTools(wx.Frame):
             layer_count = None
         self.fabrication.prepare_fab_version()
         self.fabrication.update_pcb_version_text()
-        self.fabrication.generate_geber(layer_count)
-        self.fabrication.generate_excellon()
-        self.fabrication.zip_gerber_excellon()
-        self.fabrication.generate_cpl()
-        self.fabrication.generate_bom()
+        try:
+            self.fabrication.generate_geber(layer_count)
+            self.fabrication.generate_excellon()
+            self.fabrication.zip_gerber_excellon()
+            self.fabrication.generate_cpl()
+            self.fabrication.generate_bom()
+        except Exception as exc:
+            self.logger.exception("Unexpected error while generating fabrication data")
+            wx.MessageBox(
+                f"Unexpected error while generating fabrication data: {exc}",
+                "Generation failed",
+                style=wx.ICON_ERROR,
+            )
+            return
+
         self.fabrication.save_fab_version_cache()
         self.fabrication.revert_pcb_version_text()
         if self.settings.get("gerber", {}).get("delete_old_versions", False):
             self.fabrication.delete_previous_fab_version()
+
+        generation_count = self.store.increment_generation_count()
+        post_hook_env = self.build_generate_hook_env(
+            stage="post",
+            placeholder_count=placeholder_count,
+            generation_count=generation_count,
+        )
+        self.run_generate_hook("post", post_hook_env, allow_continue=False)
 
     def copy_part_lcsc(self, *_):
         """Fetch part details from LCSC and show them in a modal."""

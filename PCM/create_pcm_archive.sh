@@ -13,17 +13,24 @@ echo "Create folder structure for ZIP"
 mkdir -p PCM/archive/plugins
 mkdir -p PCM/archive/resources
 
-echo "Copy files to destination"
-cp VERSION PCM/archive/plugins
-cp *.py PCM/archive/plugins
-cp *.png PCM/archive/plugins
-cp settings.json PCM/archive/plugins
-cp -r icons PCM/archive/plugins
-cp -r lib PCM/archive/plugins
-mkdir PCM/archive/plugins/core
-cp core/*.py PCM/archive/plugins/core
-cp PCM/icon.png PCM/archive/resources
-cp PCM/metadata.template.json PCM/archive/metadata.json
+echo "Copy top-level files"
+for file in VERSION settings.json ./*.py ./*.png; do
+	[ -e "$file" ] || continue
+	cp "$file" "$PLUGINS_DIR"
+done
+
+echo "Copy directories"
+for dir in icons lib common dblib core scripts; do
+	cp -R "$dir" "$PLUGINS_DIR"
+done
+
+echo "Prune tests and caches from packaged plugin"
+find "$PLUGINS_DIR/common" "$PLUGINS_DIR/dblib" "$PLUGINS_DIR/core" -type f \( -name 'test_*.py' -o -name 'pytest.ini' \) -delete
+find "$PLUGINS_DIR" -type d -name '__pycache__' -prune -exec rm -rf {} +
+find "$PLUGINS_DIR" -type f -name '*.pyc' -delete
+
+cp PCM/icon.png "$RESOURCES_DIR"
+cp PCM/metadata.template.json "$METADATA_FILE"
 
 echo "Write version info to file"
 echo $VERSION > PCM/archive/plugins/VERSION

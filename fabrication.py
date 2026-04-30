@@ -360,6 +360,33 @@ class Fabrication:
         except Exception as exc:
             self.logger.warning("Could not save board after reverting PCB text: %s", exc)
 
+    # ------------------------------------------------------------------
+    # Artifact path helpers (used by hook environment variables)
+    # ------------------------------------------------------------------
+
+    def get_gerber_zip_path(self):
+        """Return the full path to the generated Gerber ZIP file."""
+        stem = self.next_fab_version()
+        return os.path.join(self.outputdir, f"GERBER-{stem}.zip")
+
+    def get_cpl_csv_path(self):
+        """Return the full path to the generated CPL CSV file."""
+        stem = self.next_fab_version()
+        return os.path.join(self.outputdir, f"CPL-{stem}.csv")
+
+    def get_bom_csv_path(self):
+        """Return the full path to the generated BOM CSV file."""
+        stem = self.next_fab_version()
+        return os.path.join(self.outputdir, f"BOM-{stem}.csv")
+
+    def get_artifact_paths(self):
+        """Return all generated production artifact paths."""
+        return {
+            "gerber_zip": self.get_gerber_zip_path(),
+            "cpl_csv": self.get_cpl_csv_path(),
+            "bom_csv": self.get_bom_csv_path(),
+        }
+
     def fill_zones(self):
         """Refill copper zones following user prompt."""
         if self.parent.settings.get("gerber", {}).get("fill_zones", True):
@@ -707,10 +734,9 @@ class Fabrication:
 
     def zip_gerber_excellon(self):
         """Zip Gerber and Excellon files, ready for upload to JLCPCB."""
-        stem = self.next_fab_version()
-        zipname = f"GERBER-{stem}.zip"
+        zip_path = self.get_gerber_zip_path()
         with ZipFile(
-            os.path.join(self.outputdir, zipname),
+            zip_path,
             "w",
             compression=ZIP_DEFLATED,
             compresslevel=9,
@@ -721,22 +747,17 @@ class Fabrication:
                         continue
                     filePath = os.path.join(folderName, filename)
                     zipfile.write(filePath, os.path.basename(filePath))
-        self.logger.info(
-            "Finished generating ZIP file %s", os.path.join(self.outputdir, zipname)
-        )
+        self.logger.info("Finished generating ZIP file %s", zip_path)
 
     def generate_cpl(self):
         """Generate placement file (CPL)."""
-        stem = self.next_fab_version()
-        cplname = f"CPL-{stem}.csv"
+        cpl_path = self.get_cpl_csv_path()
         self.corrections = self.parent.library.get_all_correction_data()
         aux_orgin = self.board.GetDesignSettings().GetAuxOrigin()
         add_without_lcsc = self.parent.settings.get("gerber", {}).get(
             "lcsc_bom_cpl", True
         )
-        with open(
-            os.path.join(self.outputdir, cplname), "w", newline="", encoding="utf-8"
-        ) as csvfile:
+        with open(cpl_path, "w", newline="", encoding="utf-8") as csvfile:
             writer = csv.writer(csvfile, delimiter=",")
             writer.writerow(
                 ["Designator", "Val", "Package", "Mid X", "Mid Y", "Rotation", "Layer"]
@@ -774,21 +795,16 @@ class Fabrication:
                         "top" if fp.GetLayer() == 0 else "bottom",
                     ]
                 )
-        self.logger.info(
-            "Finished generating CPL file %s", os.path.join(self.outputdir, cplname)
-        )
+        self.logger.info("Finished generating CPL file %s", cpl_path)
 
     def generate_bom(self):
         """Generate BOM file."""
-        stem = self.next_fab_version()
-        bomname = f"BOM-{stem}.csv"
+        bom_path = self.get_bom_csv_path()
         add_without_lcsc = self.parent.settings.get("gerber", {}).get(
             "lcsc_bom_cpl", True
         )
         footprints = {fp.GetReference(): fp for fp in self.board.Footprints()}
-        with open(
-            os.path.join(self.outputdir, bomname), "w", newline="", encoding="utf-8"
-        ) as csvfile:
+        with open(bom_path, "w", newline="", encoding="utf-8") as csvfile:
             writer = csv.writer(csvfile, delimiter=",")
             writer.writerow(["Comment", "Designator", "Footprint", "LCSC", "Quantity"])
             for part in self.parent.store.read_bom_parts():
@@ -820,9 +836,7 @@ class Fabrication:
                             len(chunk),
                         ]
                     )
-        self.logger.info(
-            "Finished generating BOM file %s", os.path.join(self.outputdir, bomname)
-        )
+        self.logger.info("Finished generating BOM file %s", bom_path)
 
     def get_part_consistency_warnings(self) -> str:
         """Check the plausibility of the parts, there should be just one value per LCSC number.
