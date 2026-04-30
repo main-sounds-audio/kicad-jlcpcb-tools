@@ -106,12 +106,12 @@ class SettingsDialog(wx.Dialog):
                 _add_right(icon_widget, ctrl_widget)
             _col[0] += 1
 
-        ##### Highlight text matches in part selector ######
+        ##### Highlight text matches ######
 
         highlight_matches_label = wx.StaticText(
             self,
             id=wx.ID_ANY,
-            label="Part selector highlighting",
+            label="Match highlighting",
             pos=wx.DefaultPosition,
             size=wx.DefaultSize,
         )
@@ -123,11 +123,13 @@ class SettingsDialog(wx.Dialog):
             pos=wx.DefaultPosition,
             size=wx.DefaultSize,
             style=0,
-            name="partselector_highlight_matches",
+            name="highlighting_matches",
         )
 
         self.highlight_matches_setting.SetToolTip(
-            wx.ToolTip("Highlight keyword matches in the part selector search results")
+            wx.ToolTip(
+                "Highlight keyword matches in the part selector and main window LCSC Params column"
+            )
         )
 
         self.highlight_matches_setting.Bind(wx.EVT_CHECKBOX, self.update_settings)
@@ -485,6 +487,10 @@ class SettingsDialog(wx.Dialog):
         """Update settings dialog according to the settings."""
         self.highlight_matches_setting.SetValue(bool(enabled))
 
+    def update_matches(self, enabled):
+        """Alias: highlighting.matches → highlight_matches checkbox."""
+        self.update_highlight_matches(enabled)
+
     def update_selected_library(self, library_key):
         """Select the correct library in the dropdown."""
         if library_key in LIBRARY_CONFIGS:
@@ -629,8 +635,8 @@ class SettingsDialog(wx.Dialog):
         self.update_delete_old_versions(g.get("delete_old_versions", False))
         self.update_update_pcb_text(g.get("update_pcb_text", True))
         self.update_font_size(gen.get("font_size", 11))
-        ps = self.parent.settings.get("partselector", {})
-        self.update_highlight_matches(ps.get("highlight_matches", True))
+        hl = self.parent.settings.get("highlighting", {})
+        self.update_highlight_matches(hl.get("matches", True))
         lib = self.parent.settings.get("library", {})
         self.update_selected_library(lib.get("selected_library", "current-parts"))
         self.update_data_path(lib.get("data_path", ""))
